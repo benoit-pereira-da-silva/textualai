@@ -8,8 +8,6 @@
 - A single CLI (`textualai`) can talk to either provider with the **same command**.
 - The CLI runtime is implemented as a reusable Go package so third parties can ship **their own CLI** by composing a custom `textual` processing graph (chain/router) while keeping the default behavior as the baseline.
 
-![](https://github.com/benoit-pereira-da-silva/textual/blob/main/assets/logo.png)
-
 ---
 
 ## What’s in this module?
