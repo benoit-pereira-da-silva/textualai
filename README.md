@@ -1,2 +1,2 @@
 # textualai
-textual processors for llm providers
+**Textualai** provides [textual processors](https://github.com/benoit-pereira-da-silva/textual)  for llm providers.
