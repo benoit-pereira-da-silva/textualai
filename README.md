@@ -211,9 +211,10 @@ go build -ldflags "-X github.com/benoit-pereira-da-silva/textualai/pkg/textualai
 
 Licensed under the Apache License, Version 2.0. See the `LICENSE` file for details.
 
-# Built with [textual](/benoit-pereira-da-silva/textual)
+# Built with textual
 
-![](https://github.com/benoit-pereira-da-silva/textual/blob/main/assets/logo.png)
+![textual](https://github.com/benoit-pereira-da-silva/textual/blob/main/assets/logo.png)
+[textual](/benoit-pereira-da-silva/textual)
 
 ## License
 
