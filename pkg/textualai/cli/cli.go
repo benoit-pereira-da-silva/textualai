@@ -12,15 +12,36 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package main implements the `textualai` command-line interface.
+// Package cli implements the `textualai` command-line interface runtime.
 //
 // `textualai` is a small streaming chat CLI that can target either:
 //   - OpenAI (Responses API), or
 //   - Ollama (local HTTP API: /api/chat or /api/generate)
 //
 // It is built on top of the textual pipeline concept used throughout this repo.
-// Internally it creates a provider-specific ResponseProcessor[textual.String],
-// feeds it one input message, then streams the processor outputs to stdout.
+//
+// # Embedding and extension
+//
+// This package is designed to be reused by third parties that want to ship a
+// similar CLI while customizing the processing graph (textual.Chain /
+// textual.Router).
+//
+// The default behavior is exposed by:
+//
+//	os.Exit(cli.Run(os.Args, os.Stdout, os.Stderr))
+//
+// For customization, construct a Runner with options:
+//
+//	r := cli.NewRunner(
+//		cli.WithGraphComposer(func(ctx context.Context, cfg cli.Config, p cli.ProviderKind, base textual.Processor[textual.String], stderr io.Writer) (textual.Processor[textual.String], error) {
+//			// Wrap the base provider processor into a bigger graph.
+//			return textual.NewChain(myPreProcessor, base), nil
+//		}),
+//	)
+//
+//	os.Exit(r.Run(os.Args, os.Stdout, os.Stderr))
+//
+// See README.md in this directory for concrete, copy/paste-ready examples.
 //
 // # Provider selection
 //
@@ -68,15 +89,15 @@
 // # Streaming output semantics
 //
 // The underlying ResponseProcessors emit aggregated text snapshots (prefixes).
-// The CLI turns those snapshots back into a stream by printing only the delta
-// between successive snapshots.
+// The default streamer turns those snapshots back into a stream by printing only
+// the delta between successive snapshots.
 //
 // Exit status
 //
 //	0 - success
 //	2 - CLI usage / argument error
 //	1 - runtime failure (HTTP error, missing API key, etc.)
-package main
+package cli
 
 import (
 	"bufio"
@@ -101,27 +122,42 @@ import (
 
 // version is set at build time using:
 //
-//	go build -ldflags "-X main.version=v1.2.3"
+//	go build -ldflags "-X github.com/benoit-pereira-da-silva/textualai/pkg/textualai/cli.version=v1.2.3"
 //
 // When not set, it defaults to "dev".
 var version = "dev"
 
+// Version returns the build-time version string printed by --version.
+func Version() string { return version }
+
 const defaultPromptTemplate = "{{.Input}}"
 
-type providerKind int
+// ProviderKind is the resolved provider used by the CLI.
+type ProviderKind int
 
 const (
-	providerAuto providerKind = iota
-	providerOpenAI
-	providerOllama
+	ProviderAuto ProviderKind = iota
+	ProviderOpenAI
+	ProviderOllama
 )
 
-// cliConfig contains every user-facing option. Many fields are "optional"
-// wrappers so we can preserve tri-state behaviour (unset vs explicitly set).
-type cliConfig struct {
-	Help    optBool
-	Version optBool
-	Verbose optBool
+func (p ProviderKind) String() string {
+	switch p {
+	case ProviderOpenAI:
+		return "openai"
+	case ProviderOllama:
+		return "ollama"
+	default:
+		return "auto"
+	}
+}
+
+// Config contains every user-facing option. Many fields are "optional"
+// wrappers so we can preserve tri-state behavior (unset vs explicitly set).
+type Config struct {
+	Help    OptBool
+	Version OptBool
+	Verbose OptBool
 
 	Provider string
 	Model    string
@@ -132,22 +168,22 @@ type cliConfig struct {
 	FileMessagePath string
 	FileEncoding    string
 
-	Loop          optBool
+	Loop          OptBool
 	ExitCommands  string
 	AggregateType string
 	Role          string
 	Instructions  string
 
-	Timeout optDuration
+	Timeout OptDuration
 
-	Temperature optFloat64
-	TopP        optFloat64
-	MaxTokens   optInt
+	Temperature OptFloat64
+	TopP        OptFloat64
+	MaxTokens   OptInt
 
 	// Structured Outputs / JSON Schema.
 	JSONSchemaPath   string
 	JSONSchemaName   string
-	JSONSchemaStrict optBool
+	JSONSchemaStrict OptBool
 
 	// -----------------
 	// OpenAI-only flags
@@ -155,11 +191,11 @@ type cliConfig struct {
 
 	OpenAIServiceTier          string
 	OpenAITruncation           string
-	OpenAIStore                optBool
+	OpenAIStore                OptBool
 	OpenAIPromptCacheKey       string
 	OpenAIPromptCacheRetention string
 	OpenAISafetyIdentifier     string
-	OpenAIMetadata             kvStringMap
+	OpenAIMetadata             KVStringMap
 	OpenAIInclude              string
 
 	// -----------------
@@ -169,29 +205,29 @@ type cliConfig struct {
 	OllamaHost      string
 	OllamaEndpoint  string
 	OllamaKeepAlive string
-	OllamaThink     optBool
-	OllamaStream    optBool
+	OllamaThink     OptBool
+	OllamaStream    OptBool
 	OllamaFormat    string
 
-	OllamaTopK     optInt
-	OllamaNumCtx   optInt
-	OllamaSeed     optInt
+	OllamaTopK     OptInt
+	OllamaNumCtx   OptInt
+	OllamaSeed     OptInt
 	OllamaStop     string
-	OllamaRaw      optBool
-	OllamaExtraOpt kvAnyMap
+	OllamaRaw      OptBool
+	OllamaExtraOpt KVAnyMap
 }
 
-// optBool is a flag.Value that tracks whether it has been explicitly set.
+// OptBool is a flag.Value that tracks whether it has been explicitly set.
 // It also supports bool flag shorthand `--flag` (implicit true) by implementing
 // IsBoolFlag.
-type optBool struct {
+type OptBool struct {
 	set bool
 	val bool
 }
 
-func (b *optBool) IsBoolFlag() bool { return true }
+func (b *OptBool) IsBoolFlag() bool { return true }
 
-func (b *optBool) Set(s string) error {
+func (b *OptBool) Set(s string) error {
 	b.set = true
 	// `--flag` may call Set("").
 	if strings.TrimSpace(s) == "" {
@@ -206,21 +242,29 @@ func (b *optBool) Set(s string) error {
 	return nil
 }
 
-func (b *optBool) String() string {
+func (b *OptBool) String() string {
 	if !b.set {
 		return ""
 	}
 	return strconv.FormatBool(b.val)
 }
 
-func (b optBool) Enabled() bool { return b.set && b.val }
+// IsSet reports whether the flag has been explicitly set by the user.
+func (b OptBool) IsSet() bool { return b.set }
 
-type optInt struct {
+// Value returns the parsed flag value (default: false unless set by parsing
+// logic).
+func (b OptBool) Value() bool { return b.val }
+
+// Enabled is a convenience shortcut for IsSet() && Value().
+func (b OptBool) Enabled() bool { return b.set && b.val }
+
+type OptInt struct {
 	set bool
 	val int
 }
 
-func (i *optInt) Set(s string) error {
+func (i *OptInt) Set(s string) error {
 	i.set = true
 	v, err := strconv.Atoi(strings.TrimSpace(s))
 	if err != nil {
@@ -230,19 +274,23 @@ func (i *optInt) Set(s string) error {
 	return nil
 }
 
-func (i *optInt) String() string {
+func (i *OptInt) String() string {
 	if !i.set {
 		return ""
 	}
 	return strconv.Itoa(i.val)
 }
 
-type optFloat64 struct {
+func (i OptInt) IsSet() bool { return i.set }
+
+func (i OptInt) Value() int { return i.val }
+
+type OptFloat64 struct {
 	set bool
 	val float64
 }
 
-func (f *optFloat64) Set(s string) error {
+func (f *OptFloat64) Set(s string) error {
 	f.set = true
 	v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
 	if err != nil {
@@ -252,7 +300,7 @@ func (f *optFloat64) Set(s string) error {
 	return nil
 }
 
-func (f *optFloat64) String() string {
+func (f *OptFloat64) String() string {
 	if !f.set {
 		return ""
 	}
@@ -260,12 +308,16 @@ func (f *optFloat64) String() string {
 	return strconv.FormatFloat(f.val, 'f', -1, 64)
 }
 
-type optDuration struct {
+func (f OptFloat64) IsSet() bool { return f.set }
+
+func (f OptFloat64) Value() float64 { return f.val }
+
+type OptDuration struct {
 	set bool
 	val time.Duration
 }
 
-func (d *optDuration) Set(s string) error {
+func (d *OptDuration) Set(s string) error {
 	d.set = true
 	v, err := time.ParseDuration(strings.TrimSpace(s))
 	if err != nil {
@@ -275,17 +327,21 @@ func (d *optDuration) Set(s string) error {
 	return nil
 }
 
-func (d *optDuration) String() string {
+func (d *OptDuration) String() string {
 	if !d.set {
 		return ""
 	}
 	return d.val.String()
 }
 
-// kvStringMap collects repeated key=value pairs into a map[string]string.
-type kvStringMap map[string]string
+func (d OptDuration) IsSet() bool { return d.set }
 
-func (m *kvStringMap) Set(s string) error {
+func (d OptDuration) Value() time.Duration { return d.val }
+
+// KVStringMap collects repeated key=value pairs into a map[string]string.
+type KVStringMap map[string]string
+
+func (m *KVStringMap) Set(s string) error {
 	if *m == nil {
 		*m = make(map[string]string)
 	}
@@ -301,7 +357,7 @@ func (m *kvStringMap) Set(s string) error {
 	return nil
 }
 
-func (m *kvStringMap) String() string {
+func (m *KVStringMap) String() string {
 	if m == nil || *m == nil {
 		return ""
 	}
@@ -313,14 +369,14 @@ func (m *kvStringMap) String() string {
 	return strings.Join(parts, ",")
 }
 
-// kvAnyMap collects repeated key=value pairs into a map[string]any.
+// KVAnyMap collects repeated key=value pairs into a map[string]any.
 // Values are parsed as:
 //   - JSON (objects/arrays) when value starts with "{" or "["
 //   - bool, int, float when possible
 //   - string otherwise
-type kvAnyMap map[string]any
+type KVAnyMap map[string]any
 
-func (m *kvAnyMap) Set(s string) error {
+func (m *KVAnyMap) Set(s string) error {
 	if *m == nil {
 		*m = make(map[string]any)
 	}
@@ -337,7 +393,7 @@ func (m *kvAnyMap) Set(s string) error {
 	return nil
 }
 
-func (m *kvAnyMap) String() string {
+func (m *KVAnyMap) String() string {
 	if m == nil || *m == nil {
 		return ""
 	}
@@ -382,31 +438,236 @@ func parseScalarOrJSON(s string) any {
 	return s
 }
 
-func main() {
-	os.Exit(run(os.Args, os.Stdout, os.Stderr))
+// Run is the default `textualai` CLI entry point.
+//
+// It is intended to be called from a tiny main:
+//
+//	func main() { os.Exit(cli.Run(os.Args, os.Stdout, os.Stderr)) }
+//
+// For embedding and customization, build a Runner and call (*Runner).Run.
+func Run(argv []string, stdout io.Writer, stderr io.Writer) int {
+	return NewRunner().Run(argv, stdout, stderr)
 }
 
-func run(argv []string, stdout io.Writer, stderr io.Writer) int {
+// PrintUsage prints the default usage help.
+func PrintUsage(w io.Writer) {
+	printUsage(w)
+}
+
+// ProviderBuilder builds a provider-specific Processor based on the CLI config.
+type ProviderBuilder func(
+	ctx context.Context,
+	cfg Config,
+	model string,
+	templateStr string,
+	jsonSchema map[string]any,
+	getenv func(string) string,
+	stderr io.Writer,
+) (textual.Processor[textual.String], error)
+
+// GraphComposer optionally wraps the base provider processor into a bigger
+// processing graph.
+//
+// Typical uses:
+//   - Add a textual.Chain with pre-processing stages before the provider.
+//   - Add a textual.Router to intercept local commands (e.g. "/help").
+//   - Add post-processing stages (be mindful of snapshot vs delta semantics;
+//     see Streamer).
+type GraphComposer func(
+	ctx context.Context,
+	cfg Config,
+	provider ProviderKind,
+	base textual.Processor[textual.String],
+	stderr io.Writer,
+) (textual.Processor[textual.String], error)
+
+// Streamer runs one message through the processor and streams the output to
+// outw. It returns the final accumulated text.
+type Streamer func(
+	ctx context.Context,
+	proc textual.Processor[textual.String],
+	message string,
+	outw *bufio.Writer,
+) (string, error)
+
+// Runner is a configurable CLI runtime that can be embedded by third parties.
+//
+// Use NewRunner to obtain a Runner preconfigured with the default behavior, and
+// then inject custom builders / graph composition as needed.
+type Runner struct {
+	// Stdin is used for --loop input and for --file-message - when path is "-".
+	// Defaults to os.Stdin.
+	Stdin io.Reader
+
+	// Getenv is used to retrieve environment variables (OPENAI_API_KEY,
+	// TEXTUALAI_PROVIDER, ...). Defaults to os.Getenv.
+	Getenv func(string) string
+
+	// Usage prints help output. Defaults to PrintUsage.
+	Usage func(io.Writer)
+
+	// Parse parses flags from argv[1:] and returns the resulting Config.
+	// Defaults to ParseWithEnv using the Runner's Getenv.
+	Parse func(args []string) (Config, error)
+
+	// ProviderResolver resolves the provider + normalizes the model name.
+	// Defaults to ResolveProvider.
+	ProviderResolver func(providerFlag string, model string) (ProviderKind, string, error)
+
+	// OpenAIBuilder and OllamaBuilder build the provider-specific processors.
+	// Defaults to DefaultOpenAIBuilder and DefaultOllamaBuilder.
+	OpenAIBuilder ProviderBuilder
+	OllamaBuilder ProviderBuilder
+
+	// GraphComposer can wrap the base provider processor into a larger graph
+	// (chain/router/etc). Defaults to nil (no extra wrapping).
+	GraphComposer GraphComposer
+
+	// Streamer controls streaming output semantics.
+	// Defaults to DefaultStreamer (delta printer on snapshots).
+	Streamer Streamer
+}
+
+// Option configures a Runner.
+type Option func(*Runner)
+
+// NewRunner constructs a Runner configured with the default textualai behavior.
+// Use options to override specific extension points (graph, streamer, ...).
+func NewRunner(opts ...Option) *Runner {
+	r := &Runner{
+		Stdin:            os.Stdin,
+		Getenv:           os.Getenv,
+		Usage:            PrintUsage,
+		ProviderResolver: ResolveProvider,
+		OpenAIBuilder:    DefaultOpenAIBuilder,
+		OllamaBuilder:    DefaultOllamaBuilder,
+		Streamer:         DefaultStreamer,
+	}
+
+	for _, opt := range opts {
+		if opt == nil {
+			continue
+		}
+		opt(r)
+	}
+
+	r.ensureDefaults()
+	return r
+}
+
+// WithStdin overrides the Runner stdin.
+func WithStdin(r io.Reader) Option {
+	return func(rr *Runner) { rr.Stdin = r }
+}
+
+// WithGetenv overrides the environment getter.
+func WithGetenv(getenv func(string) string) Option {
+	return func(rr *Runner) { rr.Getenv = getenv }
+}
+
+// WithUsage overrides the usage printer.
+func WithUsage(usage func(io.Writer)) Option {
+	return func(rr *Runner) { rr.Usage = usage }
+}
+
+// WithParse overrides the argument parser.
+func WithParse(parse func(args []string) (Config, error)) Option {
+	return func(rr *Runner) { rr.Parse = parse }
+}
+
+// WithProviderResolver overrides the provider resolver.
+func WithProviderResolver(resolver func(providerFlag string, model string) (ProviderKind, string, error)) Option {
+	return func(rr *Runner) { rr.ProviderResolver = resolver }
+}
+
+// WithOpenAIBuilder overrides the OpenAI processor builder.
+func WithOpenAIBuilder(builder ProviderBuilder) Option {
+	return func(rr *Runner) { rr.OpenAIBuilder = builder }
+}
+
+// WithOllamaBuilder overrides the Ollama processor builder.
+func WithOllamaBuilder(builder ProviderBuilder) Option {
+	return func(rr *Runner) { rr.OllamaBuilder = builder }
+}
+
+// WithGraphComposer overrides the graph composer.
+func WithGraphComposer(composer GraphComposer) Option {
+	return func(rr *Runner) { rr.GraphComposer = composer }
+}
+
+// WithStreamer overrides the streamer implementation.
+func WithStreamer(streamer Streamer) Option {
+	return func(rr *Runner) { rr.Streamer = streamer }
+}
+
+func (r *Runner) ensureDefaults() {
+	if r.Stdin == nil {
+		r.Stdin = os.Stdin
+	}
+	if r.Getenv == nil {
+		r.Getenv = os.Getenv
+	}
+	if r.Usage == nil {
+		r.Usage = PrintUsage
+	}
+	if r.ProviderResolver == nil {
+		r.ProviderResolver = ResolveProvider
+	}
+	if r.OpenAIBuilder == nil {
+		r.OpenAIBuilder = DefaultOpenAIBuilder
+	}
+	if r.OllamaBuilder == nil {
+		r.OllamaBuilder = DefaultOllamaBuilder
+	}
+	if r.Streamer == nil {
+		r.Streamer = DefaultStreamer
+	}
+	if r.Parse == nil {
+		get := r.Getenv
+		r.Parse = func(args []string) (Config, error) {
+			return parseCLI(args, get)
+		}
+	}
+}
+
+// Run executes the CLI against argv.
+//
+// The expected call site is:
+//
+//	os.Exit(r.Run(os.Args, os.Stdout, os.Stderr))
+//
+// Exit status:
+//
+//	0 - success
+//	2 - CLI usage / argument error
+//	1 - runtime failure (HTTP error, missing API key, etc.)
+func (r *Runner) Run(argv []string, stdout io.Writer, stderr io.Writer) int {
+	r.ensureDefaults()
+
+	if len(argv) == 0 {
+		argv = []string{"textualai"}
+	}
+
 	// "textualai help" convenience command.
 	if len(argv) >= 2 {
 		switch strings.TrimSpace(argv[1]) {
 		case "help", "usage", "--help", "-help", "-h", "--h":
-			printUsage(stdout)
+			r.Usage(stdout)
 			return 0
 		}
 	}
 
-	cfg, err := parseCLI(argv[1:])
+	cfg, err := r.Parse(argv[1:])
 	if err != nil {
-		// parseCLI already returns user-friendly errors; show usage too.
+		// Parse already returns user-friendly errors; show usage too.
 		fmt.Fprintln(stderr, "Error:", err)
 		fmt.Fprintln(stderr)
-		printUsage(stderr)
+		r.Usage(stderr)
 		return 2
 	}
 
 	if cfg.Help.Enabled() {
-		printUsage(stdout)
+		r.Usage(stdout)
 		return 0
 	}
 
@@ -419,7 +680,7 @@ func run(argv []string, stdout io.Writer, stderr io.Writer) int {
 	if strings.TrimSpace(cfg.Model) == "" {
 		fmt.Fprintln(stderr, "Error: --model is required")
 		fmt.Fprintln(stderr)
-		printUsage(stderr)
+		r.Usage(stderr)
 		return 2
 	}
 
@@ -434,7 +695,7 @@ func run(argv []string, stdout io.Writer, stderr io.Writer) int {
 	// as a first message without re-reading the file.
 	fileMsg := ""
 	if strings.TrimSpace(cfg.FileMessagePath) != "" {
-		msg, err := readMessageFile(cfg.FileMessagePath, cfg.FileEncoding)
+		msg, err := readMessageFile(cfg.FileMessagePath, cfg.FileEncoding, r.Stdin)
 		if err != nil {
 			fmt.Fprintln(stderr, "Error:", err)
 			return 2
@@ -458,14 +719,14 @@ func run(argv []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	// Resolve provider and normalize model (strip openai:/ollama: prefix).
-	prov, modelName, err := resolveProvider(cfg.Provider, cfg.Model)
+	prov, modelName, err := r.ProviderResolver(cfg.Provider, cfg.Model)
 	if err != nil {
 		fmt.Fprintln(stderr, "Error:", err)
 		return 2
 	}
 
 	if cfg.Verbose.Enabled() {
-		fmt.Fprintf(stderr, "Provider: %s\n", providerName(prov))
+		fmt.Fprintf(stderr, "Provider: %s\n", prov.String())
 		fmt.Fprintf(stderr, "Model: %s\n", modelName)
 		if cfg.PromptTemplatePath == "" {
 			fmt.Fprintf(stderr, "Prompt template: (default)\n")
@@ -486,24 +747,79 @@ func run(argv []string, stdout io.Writer, stderr io.Writer) int {
 	if !cfg.Loop.Enabled() && strings.TrimSpace(initialMsg) == "" {
 		fmt.Fprintln(stderr, "Error: provide --message or --file-message, or use --loop")
 		fmt.Fprintln(stderr)
-		printUsage(stderr)
+		r.Usage(stderr)
 		return 2
 	}
 
-	// Build the provider processor and run once or in loop.
+	// Build the provider processor (default behavior) and optionally wrap it
+	// into a larger graph.
+	var proc textual.Processor[textual.String]
 	switch prov {
-	case providerOpenAI:
-		return runOpenAI(rootCtx, cfg, modelName, templateStr, jsonSchema, initialMsg, outw, stderr)
-	case providerOllama:
-		return runOllama(rootCtx, cfg, modelName, templateStr, jsonSchema, initialMsg, outw, stderr)
+	case ProviderOpenAI:
+		proc, err = r.OpenAIBuilder(rootCtx, cfg, modelName, templateStr, jsonSchema, r.Getenv, stderr)
+	case ProviderOllama:
+		proc, err = r.OllamaBuilder(rootCtx, cfg, modelName, templateStr, jsonSchema, r.Getenv, stderr)
 	default:
-		fmt.Fprintln(stderr, "Error: unable to resolve provider")
-		return 2
+		err = fmt.Errorf("unable to resolve provider")
 	}
+	if err != nil {
+		fmt.Fprintln(stderr, "Error:", err)
+		return 1
+	}
+	if proc == nil {
+		fmt.Fprintln(stderr, "Error: nil processor (provider builder returned nil)")
+		return 1
+	}
+
+	if r.GraphComposer != nil {
+		wrapped, err := r.GraphComposer(rootCtx, cfg, prov, proc, stderr)
+		if err != nil {
+			fmt.Fprintln(stderr, "Error:", err)
+			return 1
+		}
+		if wrapped == nil {
+			fmt.Fprintln(stderr, "Error: nil processor (graph composer returned nil)")
+			return 1
+		}
+		proc = wrapped
+	}
+
+	// One-shot vs loop.
+	if cfg.Loop.Enabled() {
+		return interactiveLoop(rootCtx, cfg, func(ctx context.Context, msg string) (string, error) {
+			return r.Streamer(ctx, proc, msg, outw)
+		}, initialMsg, r.Stdin, outw, stderr)
+	}
+
+	ctx, cancel := withOptionalTimeout(rootCtx, cfg.Timeout)
+	defer cancel()
+
+	_, err = r.Streamer(ctx, proc, initialMsg, outw)
+	if err != nil {
+		fmt.Fprintln(stderr, "Error:", err)
+		return 1
+	}
+	fmt.Fprintln(outw) // final newline
+	outw.Flush()
+	return 0
 }
 
-func parseCLI(args []string) (cliConfig, error) {
-	cfg := cliConfig{
+// Parse parses CLI args (as in os.Args[1:]) using os.Getenv defaults.
+func Parse(args []string) (Config, error) {
+	return parseCLI(args, os.Getenv)
+}
+
+// ParseWithEnv parses CLI args (as in os.Args[1:]) using the supplied getenv.
+func ParseWithEnv(args []string, getenv func(string) string) (Config, error) {
+	return parseCLI(args, getenv)
+}
+
+func parseCLI(args []string, getenv func(string) string) (Config, error) {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+
+	cfg := Config{
 		Provider: "auto",
 		// Sensible defaults for file reading.
 		FileEncoding:   "UTF-8",
@@ -513,7 +829,7 @@ func parseCLI(args []string) (cliConfig, error) {
 		JSONSchemaName: "response",
 	}
 	// Environment defaults (kept minimal and explicit).
-	if v := strings.TrimSpace(os.Getenv("TEXTUALAI_PROVIDER")); v != "" {
+	if v := strings.TrimSpace(getenv("TEXTUALAI_PROVIDER")); v != "" {
 		cfg.Provider = v
 	}
 
@@ -714,10 +1030,14 @@ func loadPromptTemplate(path string) (string, error) {
 	return s, nil
 }
 
-func readMessageFile(path string, encodingName string) (string, error) {
+func readMessageFile(path string, encodingName string, stdin io.Reader) (string, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return "", nil
+	}
+
+	if stdin == nil {
+		stdin = os.Stdin
 	}
 
 	encodingName = strings.TrimSpace(encodingName)
@@ -732,7 +1052,7 @@ func readMessageFile(path string, encodingName string) (string, error) {
 
 	var r io.Reader
 	if path == "-" {
-		r = os.Stdin
+		r = stdin
 	} else {
 		f, err := os.Open(path)
 		if err != nil {
@@ -770,21 +1090,23 @@ func combineMessage(message string, fileMsg string) string {
 	}
 }
 
-func resolveProvider(providerFlag string, model string) (providerKind, string, error) {
+// ResolveProvider selects the provider and normalizes the model name.
+// It implements the default textualai provider selection semantics.
+func ResolveProvider(providerFlag string, model string) (ProviderKind, string, error) {
 	model = strings.TrimSpace(model)
 	if model == "" {
-		return providerAuto, "", fmt.Errorf("model must not be empty")
+		return ProviderAuto, "", fmt.Errorf("model must not be empty")
 	}
 
 	// Prefix-based selection always wins.
 	lower := strings.ToLower(model)
 	switch {
 	case strings.HasPrefix(lower, "openai:"):
-		return providerOpenAI, strings.TrimSpace(model[len("openai:"):]), nil
+		return ProviderOpenAI, strings.TrimSpace(model[len("openai:"):]), nil
 	case strings.HasPrefix(lower, "oa:"):
-		return providerOpenAI, strings.TrimSpace(model[len("oa:"):]), nil
+		return ProviderOpenAI, strings.TrimSpace(model[len("oa:"):]), nil
 	case strings.HasPrefix(lower, "ollama:"):
-		return providerOllama, strings.TrimSpace(model[len("ollama:"):]), nil
+		return ProviderOllama, strings.TrimSpace(model[len("ollama:"):]), nil
 	}
 
 	// Explicit provider flag.
@@ -792,11 +1114,11 @@ func resolveProvider(providerFlag string, model string) (providerKind, string, e
 	case "", "auto":
 		// fallthrough to heuristics below
 	case "openai":
-		return providerOpenAI, model, nil
+		return ProviderOpenAI, model, nil
 	case "ollama":
-		return providerOllama, model, nil
+		return ProviderOllama, model, nil
 	default:
-		return providerAuto, "", fmt.Errorf("unknown provider %q (expected auto|openai|ollama)", providerFlag)
+		return ProviderAuto, "", fmt.Errorf("unknown provider %q (expected auto|openai|ollama)", providerFlag)
 	}
 
 	// Heuristics for auto mode.
@@ -804,20 +1126,9 @@ func resolveProvider(providerFlag string, model string) (providerKind, string, e
 	//   - OpenAI: models starting with gpt* or o* (o1, o3, etc.)
 	//   - Ollama: everything else
 	if strings.HasPrefix(lower, "gpt") || strings.HasPrefix(lower, "o") {
-		return providerOpenAI, model, nil
+		return ProviderOpenAI, model, nil
 	}
-	return providerOllama, model, nil
-}
-
-func providerName(p providerKind) string {
-	switch p {
-	case providerOpenAI:
-		return "openai"
-	case providerOllama:
-		return "ollama"
-	default:
-		return "auto"
-	}
+	return ProviderOllama, model, nil
 }
 
 func loadJSONSchema(path string) (map[string]any, error) {
@@ -839,27 +1150,31 @@ func loadJSONSchema(path string) (map[string]any, error) {
 	return schema, nil
 }
 
-func runOpenAI(
-	rootCtx context.Context,
-	cfg cliConfig,
+// DefaultOpenAIBuilder builds the default OpenAI processor using cfg.
+//
+// It preserves the behavior of the historic package main CLI.
+func DefaultOpenAIBuilder(
+	_ context.Context,
+	cfg Config,
 	model string,
 	templateStr string,
 	jsonSchema map[string]any,
-	initialMsg string,
-	outw *bufio.Writer,
+	getenv func(string) string,
 	stderr io.Writer,
-) int {
+) (textual.Processor[textual.String], error) {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+
 	// OpenAI key check is performed again by the processor, but the CLI gives a
 	// more actionable error message.
-	if len(strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))) < 10 {
-		fmt.Fprintln(stderr, "Error: missing or invalid OPENAI_API_KEY (required for OpenAI provider)")
-		return 1
+	if len(strings.TrimSpace(getenv("OPENAI_API_KEY"))) < 10 {
+		return nil, errors.New("missing or invalid OPENAI_API_KEY (required for OpenAI provider)")
 	}
 
 	procPtr, err := textualopenai.NewResponseProcessor[textual.String](model, templateStr)
 	if err != nil {
-		fmt.Fprintln(stderr, "Error:", err)
-		return 1
+		return nil, err
 	}
 	proc := *procPtr
 
@@ -893,19 +1208,19 @@ func runOpenAI(
 	}
 
 	// Sampling.
-	if cfg.Temperature.set {
-		proc = proc.WithTemperature(cfg.Temperature.val)
+	if cfg.Temperature.IsSet() {
+		proc = proc.WithTemperature(cfg.Temperature.Value())
 	}
-	if cfg.TopP.set {
-		proc = proc.WithTopP(cfg.TopP.val)
+	if cfg.TopP.IsSet() {
+		proc = proc.WithTopP(cfg.TopP.Value())
 	}
-	if cfg.MaxTokens.set {
-		proc = proc.WithMaxOutputTokens(cfg.MaxTokens.val)
+	if cfg.MaxTokens.IsSet() {
+		proc = proc.WithMaxOutputTokens(cfg.MaxTokens.Value())
 	}
 
 	// Structured outputs / JSON schema.
 	if jsonSchema != nil {
-		strict := cfg.JSONSchemaStrict.val
+		strict := cfg.JSONSchemaStrict.Value()
 		proc = proc.WithTextFormatJSONSchema(textualopenai.JSONSchemaFormat{
 			Type: "json_schema",
 			JSONSchema: textualopenai.JSONSchema{
@@ -925,8 +1240,8 @@ func runOpenAI(
 	if strings.TrimSpace(cfg.OpenAITruncation) != "" {
 		proc = proc.WithTruncation(textualopenai.TruncationStrategy(cfg.OpenAITruncation))
 	}
-	if cfg.OpenAIStore.set {
-		proc = proc.WithStore(cfg.OpenAIStore.val)
+	if cfg.OpenAIStore.IsSet() {
+		proc = proc.WithStore(cfg.OpenAIStore.Value())
 	}
 	if strings.TrimSpace(cfg.OpenAIPromptCacheKey) != "" {
 		proc = proc.WithPromptCacheKey(cfg.OpenAIPromptCacheKey)
@@ -944,41 +1259,24 @@ func runOpenAI(
 		proc = proc.WithInclude(splitCSV(cfg.OpenAIInclude)...)
 	}
 
-	// One-shot vs loop.
-	if cfg.Loop.Enabled() {
-		return interactiveLoop(rootCtx, cfg, func(ctx context.Context, msg string) (string, error) {
-			return streamOnce(ctx, proc, msg, outw)
-		}, initialMsg, outw, stderr)
-	}
-
-	ctx, cancel := withOptionalTimeout(rootCtx, cfg.Timeout)
-	defer cancel()
-
-	final, err := streamOnce(ctx, proc, initialMsg, outw)
-	_ = final
-	if err != nil {
-		fmt.Fprintln(stderr, "Error:", err)
-		return 1
-	}
-	fmt.Fprintln(outw) // final newline
-	outw.Flush()
-	return 0
+	return proc, nil
 }
 
-func runOllama(
-	rootCtx context.Context,
-	cfg cliConfig,
+// DefaultOllamaBuilder builds the default Ollama processor using cfg.
+//
+// It preserves the behavior of the historic package main CLI.
+func DefaultOllamaBuilder(
+	_ context.Context,
+	cfg Config,
 	model string,
 	templateStr string,
 	jsonSchema map[string]any,
-	initialMsg string,
-	outw *bufio.Writer,
+	_ func(string) string,
 	stderr io.Writer,
-) int {
+) (textual.Processor[textual.String], error) {
 	procPtr, err := textualollama.NewResponseProcessor[textual.String](model, templateStr)
 	if err != nil {
-		fmt.Fprintln(stderr, "Error:", err)
-		return 1
+		return nil, err
 	}
 	proc := *procPtr
 
@@ -1026,8 +1324,8 @@ func runOllama(
 	}
 
 	// Streaming toggle (Ollama supports stream=false).
-	if cfg.OllamaStream.set {
-		proc = proc.WithStream(cfg.OllamaStream.val)
+	if cfg.OllamaStream.IsSet() {
+		proc = proc.WithStream(cfg.OllamaStream.Value())
 	}
 
 	// Keep alive.
@@ -1036,30 +1334,30 @@ func runOllama(
 	}
 
 	// Thinking.
-	if cfg.OllamaThink.set {
-		proc = proc.WithThink(cfg.OllamaThink.val)
+	if cfg.OllamaThink.IsSet() {
+		proc = proc.WithThink(cfg.OllamaThink.Value())
 	}
 
 	// Sampling / common controls.
-	if cfg.Temperature.set {
-		proc = proc.WithTemperature(cfg.Temperature.val)
+	if cfg.Temperature.IsSet() {
+		proc = proc.WithTemperature(cfg.Temperature.Value())
 	}
-	if cfg.TopP.set {
-		proc = proc.WithTopP(cfg.TopP.val)
+	if cfg.TopP.IsSet() {
+		proc = proc.WithTopP(cfg.TopP.Value())
 	}
-	if cfg.MaxTokens.set {
-		proc = proc.WithNumPredict(cfg.MaxTokens.val)
+	if cfg.MaxTokens.IsSet() {
+		proc = proc.WithNumPredict(cfg.MaxTokens.Value())
 	}
 
 	// Ollama model options.
-	if cfg.OllamaTopK.set {
-		proc = proc.WithTopK(cfg.OllamaTopK.val)
+	if cfg.OllamaTopK.IsSet() {
+		proc = proc.WithTopK(cfg.OllamaTopK.Value())
 	}
-	if cfg.OllamaNumCtx.set {
-		proc = proc.WithNumCtx(cfg.OllamaNumCtx.val)
+	if cfg.OllamaNumCtx.IsSet() {
+		proc = proc.WithNumCtx(cfg.OllamaNumCtx.Value())
 	}
-	if cfg.OllamaSeed.set {
-		proc = proc.WithSeed(cfg.OllamaSeed.val)
+	if cfg.OllamaSeed.IsSet() {
+		proc = proc.WithSeed(cfg.OllamaSeed.Value())
 	}
 	if strings.TrimSpace(cfg.OllamaStop) != "" {
 		proc = proc.WithStop(splitCSV(cfg.OllamaStop)...)
@@ -1067,8 +1365,8 @@ func runOllama(
 
 	// Raw mode is generate-only; we set it regardless and Ollama will ignore
 	// if using the chat endpoint.
-	if cfg.OllamaRaw.set {
-		proc = proc.WithRaw(cfg.OllamaRaw.val)
+	if cfg.OllamaRaw.IsSet() {
+		proc = proc.WithRaw(cfg.OllamaRaw.Value())
 	}
 
 	// Extra options.
@@ -1087,43 +1385,32 @@ func runOllama(
 		proc = proc.WithFormatJSON()
 	}
 
-	// One-shot vs loop.
-	if cfg.Loop.Enabled() {
-		return interactiveLoop(rootCtx, cfg, func(ctx context.Context, msg string) (string, error) {
-			return streamOnce(ctx, proc, msg, outw)
-		}, initialMsg, outw, stderr)
-	}
-
-	ctx, cancel := withOptionalTimeout(rootCtx, cfg.Timeout)
-	defer cancel()
-
-	final, err := streamOnce(ctx, proc, initialMsg, outw)
-	_ = final
-	if err != nil {
-		fmt.Fprintln(stderr, "Error:", err)
-		return 1
-	}
-	fmt.Fprintln(outw) // final newline
-	outw.Flush()
-	return 0
+	return proc, nil
 }
 
-func withOptionalTimeout(parent context.Context, d optDuration) (context.Context, context.CancelFunc) {
-	if !d.set || d.val <= 0 {
+func withOptionalTimeout(parent context.Context, d OptDuration) (context.Context, context.CancelFunc) {
+	if !d.IsSet() || d.Value() <= 0 {
 		return parent, func() {}
 	}
-	return context.WithTimeout(parent, d.val)
+	return context.WithTimeout(parent, d.Value())
 }
 
-// streamOnce runs one processor invocation and streams its output to outw.
-// It returns the final accumulated text (useful for higher-level loops if you
-// want to keep conversation memory in the future).
-func streamOnce[P textual.Processor[textual.String]](
+// DefaultStreamer runs one processor invocation and streams its output to outw.
+//
+// It expects the processor to emit aggregated "snapshots" and prints only the
+// delta between successive snapshots.
+//
+// It returns the final accumulated text.
+func DefaultStreamer(
 	ctx context.Context,
-	proc P,
+	proc textual.Processor[textual.String],
 	message string,
 	outw *bufio.Writer,
 ) (string, error) {
+	if proc == nil {
+		return "", errors.New("nil processor")
+	}
+
 	message = strings.TrimSpace(message)
 	if message == "" {
 		return "", errors.New("empty message")
@@ -1163,12 +1450,17 @@ type streamFn func(ctx context.Context, msg string) (string, error)
 
 func interactiveLoop(
 	rootCtx context.Context,
-	cfg cliConfig,
+	cfg Config,
 	fn streamFn,
 	initialMsg string,
+	stdin io.Reader,
 	outw *bufio.Writer,
 	stderr io.Writer,
 ) int {
+	if stdin == nil {
+		stdin = os.Stdin
+	}
+
 	exitCmds := make(map[string]struct{})
 	for _, c := range splitCSV(cfg.ExitCommands) {
 		if t := strings.TrimSpace(c); t != "" {
@@ -1176,7 +1468,7 @@ func interactiveLoop(
 		}
 	}
 
-	inReader := bufio.NewReader(os.Stdin)
+	inReader := bufio.NewReader(stdin)
 
 	// In loop mode we optionally run an initial message (from flags) before
 	// prompting the user.
