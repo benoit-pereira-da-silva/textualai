@@ -14,8 +14,9 @@
 
 // Package cli implements the `textualai` command-line interface runtime.
 //
-// `textualai` is a small streaming chat CLI that can target either:
+// `textualai` is a small streaming chat CLI that can target:
 //   - OpenAI (Responses API), or
+//   - Mistral (Chat Completions API), or
 //   - Ollama (local HTTP API: /api/chat or /api/generate)
 //
 // It is built on top of the textual pipeline concept used throughout this repo.
@@ -51,12 +52,14 @@
 // Recommended and deterministic form:
 //
 //	textualai --model openai:gpt-4.1 ...
+//	textualai --model mistral:mistral-small-latest ...
 //	textualai --model ollama:llama3.1 ...
 //
 // When no prefix is used and --provider is "auto" (default), the provider is
 // inferred using simple heuristics:
 //
 //   - model names starting with "gpt" or "o" => OpenAI
+//   - model names starting with "mistral", "codestral", "ministral", "devstral", "magistral" => Mistral
 //   - everything else => Ollama
 //
 // # Environment variables
@@ -64,17 +67,22 @@
 // OpenAI:
 //   - OPENAI_API_KEY (required when using the OpenAI provider)
 //
+// Mistral:
+//   - MISTRAL_API_KEY (required when using the Mistral provider)
+//   - MISTRAL_BASE_URL (optional; default: https://api.mistral.ai)
+//
 // Ollama:
 //   - OLLAMA_HOST (optional; default: http://localhost:11434)
 //
 // textuali itself:
 //   - TEXTUALAI_PROVIDER (optional; default provider when --provider is omitted)
-//     values: auto|openai|ollama
+//     values: auto|openai|mistral|ollama
 //
 // Usage
 //
 //	textualai help
 //	textualai --model openai:gpt-4.1 --message "Hello!"
+//	textualai --model mistral:mistral-small-latest --message "Hello!"
 //	textualai --model ollama:llama3.1 --loop
 //
 // # Prompt templates
@@ -116,6 +124,7 @@ import (
 	"time"
 
 	"github.com/benoit-pereira-da-silva/textual/pkg/textual"
+	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/textualmistral"
 	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/textualollama"
 	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/textualopenai"
 )
@@ -138,6 +147,7 @@ type ProviderKind int
 const (
 	ProviderAuto ProviderKind = iota
 	ProviderOpenAI
+	ProviderMistral
 	ProviderOllama
 )
 
@@ -145,6 +155,8 @@ func (p ProviderKind) String() string {
 	switch p {
 	case ProviderOpenAI:
 		return "openai"
+	case ProviderMistral:
+		return "mistral"
 	case ProviderOllama:
 		return "ollama"
 	default:
@@ -197,6 +209,22 @@ type Config struct {
 	OpenAISafetyIdentifier     string
 	OpenAIMetadata             KVStringMap
 	OpenAIInclude              string
+
+	// -----------------
+	// Mistral-only flags
+	// -----------------
+
+	MistralBaseURL           string
+	MistralStream            OptBool
+	MistralSafePrompt        OptBool
+	MistralRandomSeed        OptInt
+	MistralPromptMode        string
+	MistralParallelToolCalls OptBool
+	MistralFrequencyPenalty  OptFloat64
+	MistralPresencePenalty   OptFloat64
+	MistralStop              string
+	MistralN                 OptInt
+	MistralResponseFormat    string
 
 	// -----------------
 	// Ollama-only flags
@@ -500,7 +528,7 @@ type Runner struct {
 	Stdin io.Reader
 
 	// Getenv is used to retrieve environment variables (OPENAI_API_KEY,
-	// TEXTUALAI_PROVIDER, ...). Defaults to os.Getenv.
+	// MISTRAL_API_KEY, TEXTUALAI_PROVIDER, ...). Defaults to os.Getenv.
 	Getenv func(string) string
 
 	// Usage prints help output. Defaults to PrintUsage.
@@ -514,10 +542,11 @@ type Runner struct {
 	// Defaults to ResolveProvider.
 	ProviderResolver func(providerFlag string, model string) (ProviderKind, string, error)
 
-	// OpenAIBuilder and OllamaBuilder build the provider-specific processors.
-	// Defaults to DefaultOpenAIBuilder and DefaultOllamaBuilder.
-	OpenAIBuilder ProviderBuilder
-	OllamaBuilder ProviderBuilder
+	// OpenAIBuilder, MistralBuilder, and OllamaBuilder build the provider-specific processors.
+	// Defaults to DefaultOpenAIBuilder, DefaultMistralBuilder, and DefaultOllamaBuilder.
+	OpenAIBuilder  ProviderBuilder
+	MistralBuilder ProviderBuilder
+	OllamaBuilder  ProviderBuilder
 
 	// GraphComposer can wrap the base provider processor into a larger graph
 	// (chain/router/etc). Defaults to nil (no extra wrapping).
@@ -540,6 +569,7 @@ func NewRunner(opts ...Option) *Runner {
 		Usage:            PrintUsage,
 		ProviderResolver: ResolveProvider,
 		OpenAIBuilder:    DefaultOpenAIBuilder,
+		MistralBuilder:   DefaultMistralBuilder,
 		OllamaBuilder:    DefaultOllamaBuilder,
 		Streamer:         DefaultStreamer,
 	}
@@ -585,6 +615,11 @@ func WithOpenAIBuilder(builder ProviderBuilder) Option {
 	return func(rr *Runner) { rr.OpenAIBuilder = builder }
 }
 
+// WithMistralBuilder overrides the Mistral processor builder.
+func WithMistralBuilder(builder ProviderBuilder) Option {
+	return func(rr *Runner) { rr.MistralBuilder = builder }
+}
+
 // WithOllamaBuilder overrides the Ollama processor builder.
 func WithOllamaBuilder(builder ProviderBuilder) Option {
 	return func(rr *Runner) { rr.OllamaBuilder = builder }
@@ -615,6 +650,9 @@ func (r *Runner) ensureDefaults() {
 	}
 	if r.OpenAIBuilder == nil {
 		r.OpenAIBuilder = DefaultOpenAIBuilder
+	}
+	if r.MistralBuilder == nil {
+		r.MistralBuilder = DefaultMistralBuilder
 	}
 	if r.OllamaBuilder == nil {
 		r.OllamaBuilder = DefaultOllamaBuilder
@@ -718,7 +756,7 @@ func (r *Runner) Run(argv []string, stdout io.Writer, stderr io.Writer) int {
 		jsonSchema = schema
 	}
 
-	// Resolve provider and normalize model (strip openai:/ollama: prefix).
+	// Resolve provider and normalize model (strip openai:/mistral:/ollama: prefix).
 	prov, modelName, err := r.ProviderResolver(cfg.Provider, cfg.Model)
 	if err != nil {
 		fmt.Fprintln(stderr, "Error:", err)
@@ -757,6 +795,8 @@ func (r *Runner) Run(argv []string, stdout io.Writer, stderr io.Writer) int {
 	switch prov {
 	case ProviderOpenAI:
 		proc, err = r.OpenAIBuilder(rootCtx, cfg, modelName, templateStr, jsonSchema, r.Getenv, stderr)
+	case ProviderMistral:
+		proc, err = r.MistralBuilder(rootCtx, cfg, modelName, templateStr, jsonSchema, r.Getenv, stderr)
 	case ProviderOllama:
 		proc, err = r.OllamaBuilder(rootCtx, cfg, modelName, templateStr, jsonSchema, r.Getenv, stderr)
 	default:
@@ -844,8 +884,8 @@ func parseCLI(args []string, getenv func(string) string) (Config, error) {
 	fs.Var(&cfg.Verbose, "verbose", "Enable diagnostic output to stderr.")
 
 	// Core selection flags.
-	fs.StringVar(&cfg.Provider, "provider", cfg.Provider, "Provider: auto|openai|ollama. Can also be set via TEXTUALAI_PROVIDER.")
-	fs.StringVar(&cfg.Model, "model", cfg.Model, "Model name. Prefix with openai: or ollama: to force provider (e.g. openai:gpt-4.1, ollama:llama3.1).")
+	fs.StringVar(&cfg.Provider, "provider", cfg.Provider, "Provider: auto|openai|mistral|ollama. Can also be set via TEXTUALAI_PROVIDER.")
+	fs.StringVar(&cfg.Model, "model", cfg.Model, "Model name. Prefix with openai:, mistral:, or ollama: to force provider (e.g. openai:gpt-4.1, mistral:mistral-small-latest, ollama:llama3.1).")
 
 	// Input / prompt shaping.
 	fs.StringVar(&cfg.PromptTemplatePath, "prompt-template", cfg.PromptTemplatePath, "Path to a Go text/template file containing {{.Input}}. Default: identity template.")
@@ -856,17 +896,17 @@ func parseCLI(args []string, getenv func(string) string) (Config, error) {
 	fs.StringVar(&cfg.ExitCommands, "exit-commands", cfg.ExitCommands, "Comma-separated commands that exit in --loop (default: exit,quit,/exit,/quit).")
 	fs.StringVar(&cfg.AggregateType, "aggregate", cfg.AggregateType, "Streaming aggregation: word|line.")
 	fs.StringVar(&cfg.Role, "role", cfg.Role, "Role for the user message when the provider builds a default message (default: user).")
-	fs.StringVar(&cfg.Instructions, "instructions", cfg.Instructions, "System/developer instructions (OpenAI 'instructions', Ollama 'system').")
+	fs.StringVar(&cfg.Instructions, "instructions", cfg.Instructions, "System/developer instructions (OpenAI 'instructions', Mistral/Ollama 'system').")
 	fs.Var(&cfg.Timeout, "timeout", "Per-request timeout (e.g. 30s, 2m).")
 
 	// Common model controls.
 	fs.Var(&cfg.Temperature, "temperature", "Sampling temperature (provider-specific range, typical: 0.0..2.0).")
 	fs.Var(&cfg.TopP, "top-p", "Nucleus sampling probability mass (0..1).")
-	fs.Var(&cfg.MaxTokens, "max-tokens", "Max output tokens (OpenAI: max_output_tokens, Ollama: num_predict).")
+	fs.Var(&cfg.MaxTokens, "max-tokens", "Max output tokens (OpenAI: max_output_tokens, Mistral: max_tokens, Ollama: num_predict).")
 
 	// Structured outputs.
-	fs.StringVar(&cfg.JSONSchemaPath, "json-schema", cfg.JSONSchemaPath, "Path to a JSON Schema file for Structured Outputs. Applied to OpenAI and Ollama when supported.")
-	fs.StringVar(&cfg.JSONSchemaName, "json-schema-name", cfg.JSONSchemaName, "Name for the OpenAI JSON schema wrapper (default: response).")
+	fs.StringVar(&cfg.JSONSchemaPath, "json-schema", cfg.JSONSchemaPath, "Path to a JSON Schema file for Structured Outputs. Applied to OpenAI, Mistral, and Ollama when supported.")
+	fs.StringVar(&cfg.JSONSchemaName, "json-schema-name", cfg.JSONSchemaName, "Name for the OpenAI/Mistral JSON schema wrapper (default: response).")
 	// Default strict=true if the flag is provided without explicit value.
 	cfg.JSONSchemaStrict.val = true
 	fs.Var(&cfg.JSONSchemaStrict, "json-schema-strict", "OpenAI-only: strict schema enforcement (default true when --json-schema is set).")
@@ -880,6 +920,19 @@ func parseCLI(args []string, getenv func(string) string) (Config, error) {
 	fs.StringVar(&cfg.OpenAISafetyIdentifier, "openai-safety-identifier", cfg.OpenAISafetyIdentifier, "OpenAI: safety_identifier.")
 	fs.Var(&cfg.OpenAIMetadata, "openai-metadata", "OpenAI: metadata key=value (repeatable).")
 	fs.StringVar(&cfg.OpenAIInclude, "openai-include", cfg.OpenAIInclude, "OpenAI: include fields (comma-separated).")
+
+	// Mistral-only.
+	fs.StringVar(&cfg.MistralBaseURL, "mistral-base-url", cfg.MistralBaseURL, "Mistral: base URL (overrides MISTRAL_BASE_URL). Example: https://api.mistral.ai")
+	fs.Var(&cfg.MistralStream, "mistral-stream", "Mistral: stream mode (true/false). Default is true.")
+	fs.Var(&cfg.MistralSafePrompt, "mistral-safe-prompt", "Mistral: safe_prompt (boolean).")
+	fs.Var(&cfg.MistralRandomSeed, "mistral-random-seed", "Mistral: random_seed (int).")
+	fs.StringVar(&cfg.MistralPromptMode, "mistral-prompt-mode", cfg.MistralPromptMode, "Mistral: prompt_mode (e.g. reasoning).")
+	fs.Var(&cfg.MistralParallelToolCalls, "mistral-parallel-tool-calls", "Mistral: parallel_tool_calls (boolean).")
+	fs.Var(&cfg.MistralFrequencyPenalty, "mistral-frequency-penalty", "Mistral: frequency_penalty (float).")
+	fs.Var(&cfg.MistralPresencePenalty, "mistral-presence-penalty", "Mistral: presence_penalty (float).")
+	fs.StringVar(&cfg.MistralStop, "mistral-stop", cfg.MistralStop, "Mistral: stop sequences (comma-separated).")
+	fs.Var(&cfg.MistralN, "mistral-n", "Mistral: number of completions to generate (n). Note: CLI renders only the first choice.")
+	fs.StringVar(&cfg.MistralResponseFormat, "mistral-response-format", cfg.MistralResponseFormat, "Mistral: response_format type (text|json_object). For JSON schema, use --json-schema.")
 
 	// Ollama-only.
 	fs.StringVar(&cfg.OllamaHost, "ollama-host", cfg.OllamaHost, "Ollama: base URL (overrides OLLAMA_HOST). Example: http://localhost:11434")
@@ -919,6 +972,11 @@ func parseCLI(args []string, getenv func(string) string) (Config, error) {
 	cfg.OpenAISafetyIdentifier = strings.TrimSpace(cfg.OpenAISafetyIdentifier)
 	cfg.OpenAIInclude = strings.TrimSpace(cfg.OpenAIInclude)
 
+	cfg.MistralBaseURL = strings.TrimSpace(cfg.MistralBaseURL)
+	cfg.MistralPromptMode = strings.TrimSpace(cfg.MistralPromptMode)
+	cfg.MistralStop = strings.TrimSpace(cfg.MistralStop)
+	cfg.MistralResponseFormat = strings.TrimSpace(cfg.MistralResponseFormat)
+
 	cfg.OllamaHost = strings.TrimSpace(cfg.OllamaHost)
 	cfg.OllamaEndpoint = strings.TrimSpace(cfg.OllamaEndpoint)
 	cfg.OllamaKeepAlive = strings.TrimSpace(cfg.OllamaKeepAlive)
@@ -937,7 +995,7 @@ func parseCLI(args []string, getenv func(string) string) (Config, error) {
 
 func printUsage(w io.Writer) {
 	// Keep the help self-contained and copy/paste friendly.
-	fmt.Fprintln(w, "textualai - streaming CLI chat for OpenAI or Ollama")
+	fmt.Fprintln(w, "textualai - streaming CLI chat for OpenAI, Mistral, or Ollama")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  textualai help")
@@ -945,23 +1003,25 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  textualai --model <model> --loop [flags]")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Provider selection:")
-	fmt.Fprintln(w, "  - Recommended: prefix the model with 'openai:' or 'ollama:'.")
-	fmt.Fprintln(w, "    Examples: openai:gpt-4.1, ollama:llama3.1")
-	fmt.Fprintln(w, "  - Alternatively set --provider openai|ollama.")
+	fmt.Fprintln(w, "  - Recommended: prefix the model with 'openai:', 'mistral:', or 'ollama:'.")
+	fmt.Fprintln(w, "    Examples: openai:gpt-4.1, mistral:mistral-small-latest, ollama:llama3.1")
+	fmt.Fprintln(w, "  - Alternatively set --provider openai|mistral|ollama.")
 	fmt.Fprintln(w, "  - Or rely on --provider auto (default) which uses heuristics.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Environment:")
 	fmt.Fprintln(w, "  OPENAI_API_KEY        OpenAI API key (required for OpenAI provider).")
+	fmt.Fprintln(w, "  MISTRAL_API_KEY       Mistral API key (required for Mistral provider).")
+	fmt.Fprintln(w, "  MISTRAL_BASE_URL      Mistral base URL (optional, default https://api.mistral.ai).")
 	fmt.Fprintln(w, "  OLLAMA_HOST           Ollama host (optional, default http://localhost:11434).")
-	fmt.Fprintln(w, "  TEXTUALAI_PROVIDER    Default provider (optional): auto|openai|ollama.")
+	fmt.Fprintln(w, "  TEXTUALAI_PROVIDER    Default provider (optional): auto|openai|mistral|ollama.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Core flags:")
-	fmt.Fprintln(w, "  --model <name>                 Model name. Prefix with openai: or ollama: to force provider.")
-	fmt.Fprintln(w, "  --provider <auto|openai|ollama> Provider selection (default: auto).")
+	fmt.Fprintln(w, "  --model <name>                 Model name. Prefix with openai:, mistral:, or ollama: to force provider.")
+	fmt.Fprintln(w, "  --provider <auto|openai|mistral|ollama> Provider selection (default: auto).")
 	fmt.Fprintln(w, "  --prompt-template <path>       Go text/template file. Must contain {{.Input}}. Default: identity template.")
 	fmt.Fprintln(w, "  --message <text>               Send a single message.")
 	fmt.Fprintln(w, "  --file-message <path|->        Read message from file (or stdin when path is '-').")
-	fmt.Fprintln(w, "  --file-encoding <name>         Encoding for --file-message (default UTF-8).")
+	fmt.Fprintln(w, "  --file-encoding <name>         Encoding for --file-message (default UTF-8). See textual.ParseEncoding supported names.")
 	fmt.Fprintln(w, "  --loop                         Interactive loop (read messages from stdin).")
 	fmt.Fprintln(w, "  --exit-commands <csv>          Exit commands in loop mode (default exit,quit,/exit,/quit).")
 	fmt.Fprintln(w, "  --aggregate <word|line>        Streaming aggregation (default word).")
@@ -971,7 +1031,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  --max-tokens <int>             Max output tokens.")
 	fmt.Fprintln(w, "  --timeout <duration>           Per-request timeout (e.g. 30s, 2m).")
 	fmt.Fprintln(w, "  --json-schema <path>           JSON Schema file (Structured Outputs).")
-	fmt.Fprintln(w, "  --json-schema-name <name>      OpenAI JSON schema wrapper name (default: response).")
+	fmt.Fprintln(w, "  --json-schema-name <name>      OpenAI/Mistral JSON schema wrapper name (default: response).")
 	fmt.Fprintln(w, "  --json-schema-strict[=bool]    OpenAI strict schema enforcement (default true when --json-schema is set).")
 	fmt.Fprintln(w, "  --verbose                      Print diagnostics to stderr.")
 	fmt.Fprintln(w, "  --version                      Print version.")
@@ -985,6 +1045,19 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  --openai-safety-identifier <id>        safety_identifier")
 	fmt.Fprintln(w, "  --openai-metadata key=value            metadata (repeatable)")
 	fmt.Fprintln(w, "  --openai-include <csv>                 include fields (comma-separated)")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Mistral-only flags:")
+	fmt.Fprintln(w, "  --mistral-base-url <url>        Base URL (overrides MISTRAL_BASE_URL).")
+	fmt.Fprintln(w, "  --mistral-stream[=bool]         Enable/disable streaming (default true).")
+	fmt.Fprintln(w, "  --mistral-safe-prompt[=bool]    safe_prompt (model-dependent).")
+	fmt.Fprintln(w, "  --mistral-random-seed <int>     random_seed.")
+	fmt.Fprintln(w, "  --mistral-prompt-mode <mode>    prompt_mode (e.g. reasoning).")
+	fmt.Fprintln(w, "  --mistral-parallel-tool-calls[=bool] parallel_tool_calls.")
+	fmt.Fprintln(w, "  --mistral-frequency-penalty <float> frequency_penalty.")
+	fmt.Fprintln(w, "  --mistral-presence-penalty <float>  presence_penalty.")
+	fmt.Fprintln(w, "  --mistral-stop <csv>            stop sequences (comma-separated).")
+	fmt.Fprintln(w, "  --mistral-n <int>               number of completions (n); CLI renders first choice only.")
+	fmt.Fprintln(w, "  --mistral-response-format <type> response_format type (text|json_object). For schema, use --json-schema.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Ollama-only flags:")
 	fmt.Fprintln(w, "  --ollama-host <url>            Base URL (overrides OLLAMA_HOST).")
@@ -1003,6 +1076,9 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "Examples:")
 	fmt.Fprintln(w, "  # OpenAI one-shot")
 	fmt.Fprintln(w, "  OPENAI_API_KEY=... textualai --model openai:gpt-4.1 --message \"Write a haiku about terminals\"")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  # Mistral one-shot")
+	fmt.Fprintln(w, "  MISTRAL_API_KEY=... textualai --model mistral:mistral-small-latest --message \"Write a haiku about terminals\"")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "  # Ollama one-shot (defaults to http://localhost:11434)")
 	fmt.Fprintln(w, "  textualai --model ollama:llama3.1 --message \"Explain monads\"")
@@ -1105,6 +1181,10 @@ func ResolveProvider(providerFlag string, model string) (ProviderKind, string, e
 		return ProviderOpenAI, strings.TrimSpace(model[len("openai:"):]), nil
 	case strings.HasPrefix(lower, "oa:"):
 		return ProviderOpenAI, strings.TrimSpace(model[len("oa:"):]), nil
+	case strings.HasPrefix(lower, "mistral:"):
+		return ProviderMistral, strings.TrimSpace(model[len("mistral:"):]), nil
+	case strings.HasPrefix(lower, "mi:"):
+		return ProviderMistral, strings.TrimSpace(model[len("mi:"):]), nil
 	case strings.HasPrefix(lower, "ollama:"):
 		return ProviderOllama, strings.TrimSpace(model[len("ollama:"):]), nil
 	}
@@ -1115,18 +1195,28 @@ func ResolveProvider(providerFlag string, model string) (ProviderKind, string, e
 		// fallthrough to heuristics below
 	case "openai":
 		return ProviderOpenAI, model, nil
+	case "mistral":
+		return ProviderMistral, model, nil
 	case "ollama":
 		return ProviderOllama, model, nil
 	default:
-		return ProviderAuto, "", fmt.Errorf("unknown provider %q (expected auto|openai|ollama)", providerFlag)
+		return ProviderAuto, "", fmt.Errorf("unknown provider %q (expected auto|openai|mistral|ollama)", providerFlag)
 	}
 
 	// Heuristics for auto mode.
 	// We keep this deliberately simple and deterministic:
 	//   - OpenAI: models starting with gpt* or o* (o1, o3, etc.)
+	//   - Mistral: models starting with mistral*, codestral*, ministral*, devstral*, magistral*
 	//   - Ollama: everything else
 	if strings.HasPrefix(lower, "gpt") || strings.HasPrefix(lower, "o") {
 		return ProviderOpenAI, model, nil
+	}
+	if strings.HasPrefix(lower, "mistral") ||
+		strings.HasPrefix(lower, "codestral") ||
+		strings.HasPrefix(lower, "ministral") ||
+		strings.HasPrefix(lower, "devstral") ||
+		strings.HasPrefix(lower, "magistral") {
+		return ProviderMistral, model, nil
 	}
 	return ProviderOllama, model, nil
 }
@@ -1257,6 +1347,133 @@ func DefaultOpenAIBuilder(
 	}
 	if strings.TrimSpace(cfg.OpenAIInclude) != "" {
 		proc = proc.WithInclude(splitCSV(cfg.OpenAIInclude)...)
+	}
+
+	return proc, nil
+}
+
+// DefaultMistralBuilder builds the default Mistral processor using cfg.
+//
+// It preserves the provider-agnostic CLI behavior while exposing Mistral-specific flags.
+func DefaultMistralBuilder(
+	_ context.Context,
+	cfg Config,
+	model string,
+	templateStr string,
+	jsonSchema map[string]any,
+	getenv func(string) string,
+	stderr io.Writer,
+) (textual.Processor[textual.String], error) {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+
+	// Mistral key check is performed again by the processor, but the CLI gives a
+	// more actionable error message.
+	if len(strings.TrimSpace(getenv("MISTRAL_API_KEY"))) < 10 {
+		return nil, errors.New("missing or invalid MISTRAL_API_KEY (required for Mistral provider)")
+	}
+
+	procPtr, err := textualmistral.NewResponseProcessor[textual.String](model, templateStr)
+	if err != nil {
+		return nil, err
+	}
+	proc := *procPtr
+
+	// Streaming aggregation.
+	switch strings.ToLower(cfg.AggregateType) {
+	case "line":
+		proc = proc.WithAggregateType(textualmistral.Line)
+	default:
+		proc = proc.WithAggregateType(textualmistral.Word)
+	}
+
+	// Role.
+	if r := strings.ToLower(strings.TrimSpace(cfg.Role)); r != "" {
+		switch r {
+		case "user":
+			proc = proc.WithRole(textualmistral.RoleUser)
+		case "assistant":
+			proc = proc.WithRole(textualmistral.RoleAssistant)
+		case "system":
+			proc = proc.WithRole(textualmistral.RoleSystem)
+		case "tool":
+			proc = proc.WithRole(textualmistral.RoleTool)
+		default:
+			fmt.Fprintf(stderr, "Warning: unsupported --role %q for Mistral; using default\n", cfg.Role)
+		}
+	}
+
+	// Base URL override.
+	if strings.TrimSpace(cfg.MistralBaseURL) != "" {
+		proc = proc.WithBaseURL(cfg.MistralBaseURL)
+	}
+
+	// Instructions (system prompt).
+	if strings.TrimSpace(cfg.Instructions) != "" {
+		proc = proc.WithInstructions(cfg.Instructions)
+	}
+
+	// Streaming toggle.
+	if cfg.MistralStream.IsSet() {
+		proc = proc.WithStream(cfg.MistralStream.Value())
+	}
+
+	// Mistral-specific controls.
+	if cfg.MistralSafePrompt.IsSet() {
+		proc = proc.WithSafePrompt(cfg.MistralSafePrompt.Value())
+	}
+	if cfg.MistralRandomSeed.IsSet() {
+		proc = proc.WithRandomSeed(cfg.MistralRandomSeed.Value())
+	}
+	if strings.TrimSpace(cfg.MistralPromptMode) != "" {
+		proc = proc.WithPromptMode(cfg.MistralPromptMode)
+	}
+	if cfg.MistralParallelToolCalls.IsSet() {
+		proc = proc.WithParallelToolCalls(cfg.MistralParallelToolCalls.Value())
+	}
+	if cfg.MistralFrequencyPenalty.IsSet() {
+		proc = proc.WithFrequencyPenalty(cfg.MistralFrequencyPenalty.Value())
+	}
+	if cfg.MistralPresencePenalty.IsSet() {
+		proc = proc.WithPresencePenalty(cfg.MistralPresencePenalty.Value())
+	}
+	if strings.TrimSpace(cfg.MistralStop) != "" {
+		proc = proc.WithStop(splitCSV(cfg.MistralStop)...)
+	}
+	if cfg.MistralN.IsSet() {
+		proc = proc.WithN(cfg.MistralN.Value())
+	}
+
+	// Sampling / common controls.
+	if cfg.Temperature.IsSet() {
+		proc = proc.WithTemperature(cfg.Temperature.Value())
+	}
+	if cfg.TopP.IsSet() {
+		proc = proc.WithTopP(cfg.TopP.Value())
+	}
+	if cfg.MaxTokens.IsSet() {
+		proc = proc.WithMaxTokens(cfg.MaxTokens.Value())
+	}
+
+	// Structured outputs / JSON schema.
+	//  1) JSON schema file wins
+	//  2) --mistral-response-format=json_object can request a JSON-only response
+	if jsonSchema != nil {
+		strict := cfg.JSONSchemaStrict.Value()
+		proc = proc.WithResponseFormatJSONSchema(textualmistral.JSONSchemaFormat{
+			Type: "json_schema",
+			JSONSchema: textualmistral.JSONSchema{
+				Name:   strings.TrimSpace(cfg.JSONSchemaName),
+				Schema: jsonSchema,
+				Strict: &strict,
+			},
+		})
+	} else if strings.EqualFold(strings.TrimSpace(cfg.MistralResponseFormat), "json") ||
+		strings.EqualFold(strings.TrimSpace(cfg.MistralResponseFormat), "json_object") {
+		proc = proc.WithResponseFormatJSONObject()
+	} else if strings.EqualFold(strings.TrimSpace(cfg.MistralResponseFormat), "text") {
+		proc = proc.WithResponseFormatText()
 	}
 
 	return proc, nil

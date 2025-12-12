@@ -1,6 +1,6 @@
 # textualai
 
-`textualai` is a small **streaming** CLI chat tool that can talk to **OpenAI** (Responses API) or **Ollama** (local HTTP API) with the **same command**.
+`textualai` is a small **streaming** CLI chat tool that can talk to **OpenAI** (Responses API), **Mistral** (Chat Completions API), or **Ollama** (local HTTP API) with the **same command**.
 
 It is built on top of the `textual` pipeline abstractions used in this repository.
 
@@ -14,6 +14,7 @@ It is built on top of the `textual` pipeline abstractions used in this repositor
 - **Prompt templates** (`--prompt-template`) using Go `text/template`
 - **Structured Outputs** (JSON Schema):
   - OpenAI: `text.format = {type:"json_schema", ...}`
+  - Mistral: `response_format = {type:"json_schema", ...}` (when supported by the model)
   - Ollama: `format = <schema object>` (when supported by your Ollama model)
 
 ---
@@ -49,19 +50,26 @@ export OPENAI_API_KEY="..."
 ./textualai --model openai:gpt-4.1 --message "Write a haiku about terminals."
 ```
 
+### Mistral (one-shot)
+
+```bash
+export MISTRAL_API_KEY="..."
+./textualai --model mistral:mistral-small-latest --message "Write a haiku about terminals."
+```
+
 ### Ollama (one-shot)
 
 Make sure Ollama is running (default: `http://localhost:11434`).
 
 ```bash
-./textualai --model ollama:gpt-oss:20b --message "Explain monads in simple terms."
+./textualai --model ollama:llama3.1 --message "Explain monads in simple terms."
 ```
 
 If your Ollama server is elsewhere:
 
 ```bash
 export OLLAMA_HOST="http://127.0.0.1:11434"
-./textualai --model ollama:gpt-oss:20b --message "Hello from another host."
+./textualai --model ollama:llama3.1 --message "Hello from another host."
 ```
 
 ---
@@ -84,6 +92,7 @@ There are 3 ways to choose the provider:
 
 ```bash
 ./textualai --model openai:gpt-4.1 ...
+./textualai --model mistral:mistral-small-latest ...
 ./textualai --model ollama:llama3.1 ...
 ```
 
@@ -91,18 +100,20 @@ There are 3 ways to choose the provider:
 
 ```bash
 ./textualai --provider openai --model gpt-4.1 ...
+./textualai --provider mistral --model mistral-small-latest ...
 ./textualai --provider ollama --model llama3.1 ...
 ```
 
 3) Default: `--provider auto` (heuristics)
 
 - model starts with `gpt` or `o` → OpenAI
+- model starts with `mistral`, `codestral`, `ministral`, `devstral`, `magistral` → Mistral
 - otherwise → Ollama
 
 You can also set a default provider:
 
 ```bash
-export TEXTUALAI_PROVIDER="ollama"
+export TEXTUALAI_PROVIDER="mistral"
 ```
 
 ---
@@ -208,6 +219,26 @@ export OPENAI_API_KEY="..."
   --message "What is the capital of France? Return JSON."
 ```
 
+### Mistral JSON Schema
+
+```bash
+export MISTRAL_API_KEY="..."
+./textualai --model mistral:mistral-small-latest \
+  --json-schema ./schema.json \
+  --message "What is the capital of France? Return JSON."
+```
+
+### Mistral JSON output (no schema)
+
+Some models support requesting JSON output without a schema:
+
+```bash
+export MISTRAL_API_KEY="..."
+./textualai --model mistral:mistral-small-latest \
+  --mistral-response-format json_object \
+  --message "Return JSON with keys: a, b, c."
+```
+
 ### Ollama JSON output
 
 Some models support requesting JSON output:
@@ -245,6 +276,20 @@ To request schema-based output (when supported):
 - `--openai-safety-identifier <id>`
 - `--openai-metadata key=value` (repeatable)
 - `--openai-include <csv>`
+
+### Mistral-only
+
+- `--mistral-base-url <url>` (overrides `MISTRAL_BASE_URL`)
+- `--mistral-stream[=bool]`
+- `--mistral-safe-prompt[=bool]`
+- `--mistral-random-seed <int>`
+- `--mistral-prompt-mode <mode>` (e.g. `reasoning`)
+- `--mistral-parallel-tool-calls[=bool]`
+- `--mistral-frequency-penalty <float>`
+- `--mistral-presence-penalty <float>`
+- `--mistral-stop <csv>`
+- `--mistral-n <int>`
+- `--mistral-response-format <type>` (`text` or `json_object`)
 
 ### Ollama-only
 
