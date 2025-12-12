@@ -1,6 +1,6 @@
 # textualai
 
-`textualai` is a small **streaming** CLI chat tool that can talk to **OpenAI** (Responses API), **Mistral** (Chat Completions API), or **Ollama** (local HTTP API) with the **same command**.
+`textualai` is a small **streaming** CLI chat tool that can talk to **OpenAI** (Responses API), **Gemini** (GenerateContent API), **Mistral** (Chat Completions API), or **Ollama** (local HTTP API) with the **same command**.
 
 It is built on top of the `textual` pipeline abstractions used in this repository.
 
@@ -14,6 +14,7 @@ It is built on top of the `textual` pipeline abstractions used in this repositor
 - **Prompt templates** (`--prompt-template`) using Go `text/template`
 - **Structured Outputs** (JSON Schema):
   - OpenAI: `text.format = {type:"json_schema", ...}`
+  - Gemini: `generationConfig.responseMimeType="application/json"` + `generationConfig.responseSchema=<schema>`
   - Mistral: `response_format = {type:"json_schema", ...}` (when supported by the model)
   - Ollama: `format = <schema object>` (when supported by your Ollama model)
 
@@ -24,7 +25,7 @@ It is built on top of the `textual` pipeline abstractions used in this repositor
 From the repository root (example):
 
 ```bash
-go build -o textualai ./textualai/pkg/textualai/cli
+go build -o textualai ./textualai/pkg/textualai
 ```
 
 Or run directly:
@@ -36,7 +37,7 @@ go run ./textualai/pkg/textualai --help
 You can embed a version at build time:
 
 ```bash
-go build -o textualai -ldflags "-X main.version=v0.1.0" ./textualai/pkg/textualai/cli
+go build -o textualai -ldflags "-X github.com/benoit-pereira-da-silva/textualai/pkg/textualai/cli.version=v0.1.0" ./textualai/pkg/textualai
 ```
 
 ---
@@ -48,6 +49,13 @@ go build -o textualai -ldflags "-X main.version=v0.1.0" ./textualai/pkg/textuala
 ```bash
 export OPENAI_API_KEY="..."
 ./textualai --model openai:gpt-4.1 --message "Write a haiku about terminals."
+```
+
+### Gemini (one-shot)
+
+```bash
+export GEMINI_API_KEY="..."
+./textualai --model gemini:gemini-2.5-flash --message "Write a haiku about terminals."
 ```
 
 ### Mistral (one-shot)
@@ -92,6 +100,7 @@ There are 3 ways to choose the provider:
 
 ```bash
 ./textualai --model openai:gpt-4.1 ...
+./textualai --model gemini:gemini-2.5-flash ...
 ./textualai --model mistral:mistral-small-latest ...
 ./textualai --model ollama:llama3.1 ...
 ```
@@ -100,6 +109,7 @@ There are 3 ways to choose the provider:
 
 ```bash
 ./textualai --provider openai --model gpt-4.1 ...
+./textualai --provider gemini --model gemini-2.5-flash ...
 ./textualai --provider mistral --model mistral-small-latest ...
 ./textualai --provider ollama --model llama3.1 ...
 ```
@@ -107,13 +117,14 @@ There are 3 ways to choose the provider:
 3) Default: `--provider auto` (heuristics)
 
 - model starts with `gpt` or `o` → OpenAI
+- model starts with `gemini` → Gemini
 - model starts with `mistral`, `codestral`, `ministral`, `devstral`, `magistral` → Mistral
 - otherwise → Ollama
 
 You can also set a default provider:
 
 ```bash
-export TEXTUALAI_PROVIDER="mistral"
+export TEXTUALAI_PROVIDER="gemini"
 ```
 
 ---
@@ -194,8 +205,6 @@ You can override them:
 
 ## Structured Outputs (JSON Schema)
 
-### OpenAI JSON Schema
-
 Create `schema.json`:
 
 ```json
@@ -210,22 +219,39 @@ Create `schema.json`:
 }
 ```
 
-Run:
+### OpenAI JSON Schema
 
 ```bash
 export OPENAI_API_KEY="..."
-./textualai --model openai:gpt-4.1 \
-  --json-schema ./schema.json \
-  --message "What is the capital of France? Return JSON."
+./textualai --model openai:gpt-4.1   --json-schema ./schema.json   --message "What is the capital of France? Return JSON."
+```
+
+### Gemini JSON Schema
+
+When `--json-schema` is provided with the Gemini provider, the CLI sets:
+
+- `generationConfig.responseMimeType = "application/json"` (unless you explicitly override it)
+- `generationConfig.responseSchema = <schema object>`
+
+```bash
+export GEMINI_API_KEY="..."
+./textualai --model gemini:gemini-2.5-flash   --json-schema ./schema.json   --message "What is the capital of France? Return JSON."
+```
+
+### Gemini JSON output (no schema)
+
+Some use-cases only need “JSON mode” without schema validation. You can request JSON by setting the response MIME type:
+
+```bash
+export GEMINI_API_KEY="..."
+./textualai --model gemini:gemini-2.5-flash   --gemini-response-mime-type application/json   --message "Return JSON with keys: a, b, c."
 ```
 
 ### Mistral JSON Schema
 
 ```bash
 export MISTRAL_API_KEY="..."
-./textualai --model mistral:mistral-small-latest \
-  --json-schema ./schema.json \
-  --message "What is the capital of France? Return JSON."
+./textualai --model mistral:mistral-small-latest   --json-schema ./schema.json   --message "What is the capital of France? Return JSON."
 ```
 
 ### Mistral JSON output (no schema)
@@ -234,9 +260,7 @@ Some models support requesting JSON output without a schema:
 
 ```bash
 export MISTRAL_API_KEY="..."
-./textualai --model mistral:mistral-small-latest \
-  --mistral-response-format json_object \
-  --message "Return JSON with keys: a, b, c."
+./textualai --model mistral:mistral-small-latest   --mistral-response-format json_object   --message "Return JSON with keys: a, b, c."
 ```
 
 ### Ollama JSON output
@@ -276,6 +300,16 @@ To request schema-based output (when supported):
 - `--openai-safety-identifier <id>`
 - `--openai-metadata key=value` (repeatable)
 - `--openai-include <csv>`
+
+### Gemini-only
+
+- `--gemini-base-url <url>` (default: `https://generativelanguage.googleapis.com`)
+- `--gemini-api-version <v>` (default: `v1beta`)
+- `--gemini-stream[=bool]`
+- `--gemini-top-k <int>`
+- `--gemini-stop <csv>`
+- `--gemini-candidate-count <int>`
+- `--gemini-response-mime-type <type>` (e.g. `application/json`)
 
 ### Mistral-only
 

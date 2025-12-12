@@ -4,7 +4,7 @@ This directory contains the reusable **`cli`** package that powers the `textuala
 
 The package is designed for:
 
-- **Default behavior out of the box** (OpenAI Responses API, Mistral Chat Completions, or Ollama HTTP API).
+- **Default behavior out of the box** (OpenAI Responses API, Gemini GenerateContent API, Mistral Chat Completions, or Ollama HTTP API).
 - **Embedding** in a tiny `main` (one-liner entry point).
 - **Easy extension** by wrapping the provider processor into your own **textual processing graph** (e.g. `textual.Chain` / `textual.Router`).
 
@@ -16,6 +16,12 @@ The package is designed for:
 
 ```bash
 OPENAI_API_KEY=... textualai --model openai:gpt-4.1 --message "Write a haiku about terminals"
+```
+
+### Gemini one-shot
+
+```bash
+GEMINI_API_KEY=... textualai --model gemini:gemini-2.5-flash --message "Write a haiku about terminals"
 ```
 
 ### Mistral one-shot
@@ -159,7 +165,7 @@ func main() {
 				return strings.TrimSpace(item.UTF8String()) == "/ping"
 			}, local)
 
-			// Catch-all route: the real provider (OpenAI/Mistral/Ollama).
+			// Catch-all route: the real provider (OpenAI/Gemini/Mistral/Ollama).
 			router.AddProcessor(base)
 
 			return router, nil
