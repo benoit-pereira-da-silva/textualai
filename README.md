@@ -212,7 +212,8 @@ Licensed under the Apache License, Version 2.0. See the `LICENSE` file for detai
 # Built with textual
 
 ![textual](https://github.com/benoit-pereira-da-silva/textual/blob/main/assets/logo.png)
-[textual](/benoit-pereira-da-silva/textual)
+
+[textual](https://github.com/benoit-pereira-da-silva/textual)
 
 ## License
 
