@@ -16,6 +16,7 @@
 //
 // `textualai` is a small streaming chat CLI that can target:
 //   - OpenAI (Responses API), or
+//   - Claude / Anthropic (Messages API), or
 //   - Gemini (GenerateContent API), or
 //   - Mistral (Chat Completions API), or
 //   - Ollama (local HTTP API: /api/chat or /api/generate)
@@ -53,6 +54,7 @@
 // Recommended and deterministic form:
 //
 //	textualai --model openai:gpt-4.1 ...
+//	textualai --model claude:claude-3-5-sonnet-latest ...
 //	textualai --model gemini:gemini-2.5-flash ...
 //	textualai --model mistral:mistral-small-latest ...
 //	textualai --model ollama:llama3.1 ...
@@ -61,6 +63,7 @@
 // inferred using simple heuristics:
 //
 //   - model names starting with "gpt" or "o" => OpenAI
+//   - model names starting with "claude" => Claude / Anthropic
 //   - model names starting with "gemini" => Gemini
 //   - model names starting with "mistral", "codestral", "ministral", "devstral", "magistral" => Mistral
 //   - everything else => Ollama
@@ -69,6 +72,11 @@
 //
 // OpenAI:
 //   - OPENAI_API_KEY (required when using the OpenAI provider)
+//
+// Claude / Anthropic:
+//   - ANTHROPIC_API_KEY (required when using the Claude provider)
+//   - ANTHROPIC_BASE_URL (optional; default: https://api.anthropic.com)
+//   - ANTHROPIC_VERSION (optional; default: 2023-06-01)
 //
 // Gemini:
 //   - GEMINI_API_KEY (required when using the Gemini provider)
@@ -82,12 +90,13 @@
 //
 // textualai itself:
 //   - TEXTUALAI_PROVIDER (optional; default provider when --provider is omitted)
-//     values: auto|openai|gemini|mistral|ollama
+//     values: auto|openai|claude|gemini|mistral|ollama
 //
 // Usage
 //
 //	textualai help
 //	textualai --model openai:gpt-4.1 --message "Hello!"
+//	textualai --model claude:claude-3-5-sonnet-latest --message "Hello!"
 //	textualai --model gemini:gemini-2.5-flash --message "Hello!"
 //	textualai --model mistral:mistral-small-latest --message "Hello!"
 //	textualai --model ollama:llama3.1 --loop
@@ -131,6 +140,7 @@ import (
 	"time"
 
 	"github.com/benoit-pereira-da-silva/textual/pkg/textual"
+	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/textualclaude"
 	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/textualgemini"
 	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/textualmistral"
 	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/textualollama"
@@ -155,6 +165,7 @@ type ProviderKind int
 const (
 	ProviderAuto ProviderKind = iota
 	ProviderOpenAI
+	ProviderClaude
 	ProviderGemini
 	ProviderMistral
 	ProviderOllama
@@ -164,6 +175,8 @@ func (p ProviderKind) String() string {
 	switch p {
 	case ProviderOpenAI:
 		return "openai"
+	case ProviderClaude:
+		return "claude"
 	case ProviderGemini:
 		return "gemini"
 	case ProviderMistral:
@@ -220,6 +233,16 @@ type Config struct {
 	OpenAISafetyIdentifier     string
 	OpenAIMetadata             KVStringMap
 	OpenAIInclude              string
+
+	// -----------------
+	// Claude-only flags
+	// -----------------
+
+	ClaudeBaseURL    string
+	ClaudeAPIVersion string
+	ClaudeStream     OptBool
+	ClaudeTopK       OptInt
+	ClaudeStop       string
 
 	// -----------------
 	// Gemini-only flags
@@ -551,7 +574,8 @@ type Runner struct {
 	Stdin io.Reader
 
 	// Getenv is used to retrieve environment variables (OPENAI_API_KEY,
-	// GEMINI_API_KEY, MISTRAL_API_KEY, TEXTUALAI_PROVIDER, ...). Defaults to os.Getenv.
+	// ANTHROPIC_API_KEY, GEMINI_API_KEY, MISTRAL_API_KEY, TEXTUALAI_PROVIDER, ...).
+	// Defaults to os.Getenv.
 	Getenv func(string) string
 
 	// Usage prints help output. Defaults to PrintUsage.
@@ -566,8 +590,10 @@ type Runner struct {
 	ProviderResolver func(providerFlag string, model string) (ProviderKind, string, error)
 
 	// Provider builders build the provider-specific processors.
-	// Defaults to DefaultOpenAIBuilder, DefaultGeminiBuilder, DefaultMistralBuilder, and DefaultOllamaBuilder.
+	// Defaults to DefaultOpenAIBuilder, DefaultClaudeBuilder, DefaultGeminiBuilder,
+	// DefaultMistralBuilder, and DefaultOllamaBuilder.
 	OpenAIBuilder  ProviderBuilder
+	ClaudeBuilder  ProviderBuilder
 	GeminiBuilder  ProviderBuilder
 	MistralBuilder ProviderBuilder
 	OllamaBuilder  ProviderBuilder
@@ -593,6 +619,7 @@ func NewRunner(opts ...Option) *Runner {
 		Usage:            PrintUsage,
 		ProviderResolver: ResolveProvider,
 		OpenAIBuilder:    DefaultOpenAIBuilder,
+		ClaudeBuilder:    DefaultClaudeBuilder,
 		GeminiBuilder:    DefaultGeminiBuilder,
 		MistralBuilder:   DefaultMistralBuilder,
 		OllamaBuilder:    DefaultOllamaBuilder,
@@ -640,6 +667,11 @@ func WithOpenAIBuilder(builder ProviderBuilder) Option {
 	return func(rr *Runner) { rr.OpenAIBuilder = builder }
 }
 
+// WithClaudeBuilder overrides the Claude / Anthropic processor builder.
+func WithClaudeBuilder(builder ProviderBuilder) Option {
+	return func(rr *Runner) { rr.ClaudeBuilder = builder }
+}
+
 // WithGeminiBuilder overrides the Gemini processor builder.
 func WithGeminiBuilder(builder ProviderBuilder) Option {
 	return func(rr *Runner) { rr.GeminiBuilder = builder }
@@ -680,6 +712,9 @@ func (r *Runner) ensureDefaults() {
 	}
 	if r.OpenAIBuilder == nil {
 		r.OpenAIBuilder = DefaultOpenAIBuilder
+	}
+	if r.ClaudeBuilder == nil {
+		r.ClaudeBuilder = DefaultClaudeBuilder
 	}
 	if r.GeminiBuilder == nil {
 		r.GeminiBuilder = DefaultGeminiBuilder
@@ -789,7 +824,7 @@ func (r *Runner) Run(argv []string, stdout io.Writer, stderr io.Writer) int {
 		jsonSchema = schema
 	}
 
-	// Resolve provider and normalize model (strip openai:/gemini:/mistral:/ollama: prefix).
+	// Resolve provider and normalize model (strip openai:/claude:/gemini:/mistral:/ollama: prefix).
 	prov, modelName, err := r.ProviderResolver(cfg.Provider, cfg.Model)
 	if err != nil {
 		fmt.Fprintln(stderr, "Error:", err)
@@ -828,6 +863,8 @@ func (r *Runner) Run(argv []string, stdout io.Writer, stderr io.Writer) int {
 	switch prov {
 	case ProviderOpenAI:
 		proc, err = r.OpenAIBuilder(rootCtx, cfg, modelName, templateStr, jsonSchema, r.Getenv, stderr)
+	case ProviderClaude:
+		proc, err = r.ClaudeBuilder(rootCtx, cfg, modelName, templateStr, jsonSchema, r.Getenv, stderr)
 	case ProviderGemini:
 		proc, err = r.GeminiBuilder(rootCtx, cfg, modelName, templateStr, jsonSchema, r.Getenv, stderr)
 	case ProviderMistral:
@@ -919,8 +956,8 @@ func parseCLI(args []string, getenv func(string) string) (Config, error) {
 	fs.Var(&cfg.Verbose, "verbose", "Enable diagnostic output to stderr.")
 
 	// Core selection flags.
-	fs.StringVar(&cfg.Provider, "provider", cfg.Provider, "Provider: auto|openai|gemini|mistral|ollama. Can also be set via TEXTUALAI_PROVIDER.")
-	fs.StringVar(&cfg.Model, "model", cfg.Model, "Model name. Prefix with openai:, gemini:, mistral:, or ollama: to force provider (e.g. openai:gpt-4.1, gemini:gemini-2.5-flash, mistral:mistral-small-latest, ollama:llama3.1).")
+	fs.StringVar(&cfg.Provider, "provider", cfg.Provider, "Provider: auto|openai|claude|gemini|mistral|ollama. Can also be set via TEXTUALAI_PROVIDER.")
+	fs.StringVar(&cfg.Model, "model", cfg.Model, "Model name. Prefix with openai:, claude:, gemini:, mistral:, or ollama: to force provider (e.g. openai:gpt-4.1, claude:claude-3-5-sonnet-latest, gemini:gemini-2.5-flash, mistral:mistral-small-latest, ollama:llama3.1).")
 
 	// Input / prompt shaping.
 	fs.StringVar(&cfg.PromptTemplatePath, "prompt-template", cfg.PromptTemplatePath, "Path to a Go text/template file containing {{.Input}}. Default: identity template.")
@@ -931,20 +968,20 @@ func parseCLI(args []string, getenv func(string) string) (Config, error) {
 	fs.StringVar(&cfg.ExitCommands, "exit-commands", cfg.ExitCommands, "Comma-separated commands that exit in --loop (default: exit,quit,/exit,/quit).")
 	fs.StringVar(&cfg.AggregateType, "aggregate", cfg.AggregateType, "Streaming aggregation: word|line.")
 	fs.StringVar(&cfg.Role, "role", cfg.Role, "Role for the user message when the provider builds a default message (default: user).")
-	fs.StringVar(&cfg.Instructions, "instructions", cfg.Instructions, "System/developer instructions (OpenAI 'instructions', Gemini 'systemInstruction', Mistral/Ollama 'system').")
+	fs.StringVar(&cfg.Instructions, "instructions", cfg.Instructions, "System/developer instructions (OpenAI 'instructions', Claude 'system', Gemini 'systemInstruction', Mistral/Ollama 'system').")
 	fs.Var(&cfg.Timeout, "timeout", "Per-request timeout (e.g. 30s, 2m).")
 
 	// Common model controls.
 	fs.Var(&cfg.Temperature, "temperature", "Sampling temperature (provider-specific range, typical: 0.0..2.0).")
 	fs.Var(&cfg.TopP, "top-p", "Nucleus sampling probability mass (0..1).")
-	fs.Var(&cfg.MaxTokens, "max-tokens", "Max output tokens (OpenAI: max_output_tokens, Gemini: generationConfig.maxOutputTokens, Mistral: max_tokens, Ollama: num_predict).")
+	fs.Var(&cfg.MaxTokens, "max-tokens", "Max output tokens (OpenAI: max_output_tokens, Claude: max_tokens, Gemini: generationConfig.maxOutputTokens, Mistral: max_tokens, Ollama: num_predict).")
 
 	// Structured outputs.
-	fs.StringVar(&cfg.JSONSchemaPath, "json-schema", cfg.JSONSchemaPath, "Path to a JSON Schema file for Structured Outputs. Applied to OpenAI, Gemini, Mistral, and Ollama when supported.")
-	fs.StringVar(&cfg.JSONSchemaName, "json-schema-name", cfg.JSONSchemaName, "Name for the OpenAI/Mistral JSON schema wrapper (default: response).")
+	fs.StringVar(&cfg.JSONSchemaPath, "json-schema", cfg.JSONSchemaPath, "Path to a JSON Schema file for Structured Outputs. Applied to OpenAI, Claude, Gemini, Mistral, and Ollama when supported.")
+	fs.StringVar(&cfg.JSONSchemaName, "json-schema-name", cfg.JSONSchemaName, "Name for the OpenAI/Mistral/Claude schema wrapper/tool (default: response).")
 	// Default strict=true if the flag is provided without explicit value.
 	cfg.JSONSchemaStrict.val = true
-	fs.Var(&cfg.JSONSchemaStrict, "json-schema-strict", "OpenAI-only: strict schema enforcement (default true when --json-schema is set).")
+	fs.Var(&cfg.JSONSchemaStrict, "json-schema-strict", "OpenAI/Mistral: strict schema enforcement (default true when --json-schema is set).")
 
 	// OpenAI-only.
 	fs.StringVar(&cfg.OpenAIServiceTier, "openai-service-tier", cfg.OpenAIServiceTier, "OpenAI: service tier (auto|default|flex|priority).")
@@ -955,6 +992,13 @@ func parseCLI(args []string, getenv func(string) string) (Config, error) {
 	fs.StringVar(&cfg.OpenAISafetyIdentifier, "openai-safety-identifier", cfg.OpenAISafetyIdentifier, "OpenAI: safety_identifier.")
 	fs.Var(&cfg.OpenAIMetadata, "openai-metadata", "OpenAI: metadata key=value (repeatable).")
 	fs.StringVar(&cfg.OpenAIInclude, "openai-include", cfg.OpenAIInclude, "OpenAI: include fields (comma-separated).")
+
+	// Claude-only.
+	fs.StringVar(&cfg.ClaudeBaseURL, "claude-base-url", cfg.ClaudeBaseURL, "Claude/Anthropic: base URL (overrides ANTHROPIC_BASE_URL). Default: https://api.anthropic.com")
+	fs.StringVar(&cfg.ClaudeAPIVersion, "claude-api-version", cfg.ClaudeAPIVersion, "Claude/Anthropic: anthropic-version header (overrides ANTHROPIC_VERSION). Default: 2023-06-01")
+	fs.Var(&cfg.ClaudeStream, "claude-stream", "Claude/Anthropic: stream mode (true/false). Default is true.")
+	fs.Var(&cfg.ClaudeTopK, "claude-top-k", "Claude/Anthropic: top_k.")
+	fs.StringVar(&cfg.ClaudeStop, "claude-stop", cfg.ClaudeStop, "Claude/Anthropic: stop_sequences (comma-separated).")
 
 	// Gemini-only.
 	fs.StringVar(&cfg.GeminiBaseURL, "gemini-base-url", cfg.GeminiBaseURL, "Gemini: base URL (default: https://generativelanguage.googleapis.com).")
@@ -1016,6 +1060,10 @@ func parseCLI(args []string, getenv func(string) string) (Config, error) {
 	cfg.OpenAISafetyIdentifier = strings.TrimSpace(cfg.OpenAISafetyIdentifier)
 	cfg.OpenAIInclude = strings.TrimSpace(cfg.OpenAIInclude)
 
+	cfg.ClaudeBaseURL = strings.TrimSpace(cfg.ClaudeBaseURL)
+	cfg.ClaudeAPIVersion = strings.TrimSpace(cfg.ClaudeAPIVersion)
+	cfg.ClaudeStop = strings.TrimSpace(cfg.ClaudeStop)
+
 	cfg.GeminiBaseURL = strings.TrimSpace(cfg.GeminiBaseURL)
 	cfg.GeminiAPIVersion = strings.TrimSpace(cfg.GeminiAPIVersion)
 	cfg.GeminiStop = strings.TrimSpace(cfg.GeminiStop)
@@ -1044,7 +1092,7 @@ func parseCLI(args []string, getenv func(string) string) (Config, error) {
 
 func printUsage(w io.Writer) {
 	// Keep the help self-contained and copy/paste friendly.
-	fmt.Fprintln(w, "textualai - streaming CLI chat for OpenAI, Gemini, Mistral, or Ollama")
+	fmt.Fprintln(w, "textualai - streaming CLI chat for OpenAI, Claude, Gemini, Mistral, or Ollama")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  textualai help")
@@ -1052,22 +1100,25 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  textualai --model <model> --loop [flags]")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Provider selection:")
-	fmt.Fprintln(w, "  - Recommended: prefix the model with 'openai:', 'gemini:', 'mistral:', or 'ollama:'.")
-	fmt.Fprintln(w, "    Examples: openai:gpt-4.1, gemini:gemini-2.5-flash, mistral:mistral-small-latest, ollama:llama3.1")
-	fmt.Fprintln(w, "  - Alternatively set --provider openai|gemini|mistral|ollama.")
+	fmt.Fprintln(w, "  - Recommended: prefix the model with 'openai:', 'claude:', 'gemini:', 'mistral:', or 'ollama:'.")
+	fmt.Fprintln(w, "    Examples: openai:gpt-4.1, claude:claude-3-5-sonnet-latest, gemini:gemini-2.5-flash, mistral:mistral-small-latest, ollama:llama3.1")
+	fmt.Fprintln(w, "  - Alternatively set --provider openai|claude|gemini|mistral|ollama.")
 	fmt.Fprintln(w, "  - Or rely on --provider auto (default) which uses heuristics.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Environment:")
-	fmt.Fprintln(w, "  OPENAI_API_KEY        OpenAI API key (required for OpenAI provider).")
-	fmt.Fprintln(w, "  GEMINI_API_KEY        Gemini API key (required for Gemini provider).")
-	fmt.Fprintln(w, "  MISTRAL_API_KEY       Mistral API key (required for Mistral provider).")
-	fmt.Fprintln(w, "  MISTRAL_BASE_URL      Mistral base URL (optional, default https://api.mistral.ai).")
-	fmt.Fprintln(w, "  OLLAMA_HOST           Ollama host (optional, default http://localhost:11434).")
-	fmt.Fprintln(w, "  TEXTUALAI_PROVIDER    Default provider (optional): auto|openai|gemini|mistral|ollama.")
+	fmt.Fprintln(w, "  OPENAI_API_KEY         OpenAI API key (required for OpenAI provider).")
+	fmt.Fprintln(w, "  ANTHROPIC_API_KEY      Claude/Anthropic API key (required for Claude provider).")
+	fmt.Fprintln(w, "  ANTHROPIC_BASE_URL     Claude/Anthropic base URL (optional, default https://api.anthropic.com).")
+	fmt.Fprintln(w, "  ANTHROPIC_VERSION      Claude/Anthropic API version header (optional, default 2023-06-01).")
+	fmt.Fprintln(w, "  GEMINI_API_KEY         Gemini API key (required for Gemini provider).")
+	fmt.Fprintln(w, "  MISTRAL_API_KEY        Mistral API key (required for Mistral provider).")
+	fmt.Fprintln(w, "  MISTRAL_BASE_URL       Mistral base URL (optional, default https://api.mistral.ai).")
+	fmt.Fprintln(w, "  OLLAMA_HOST            Ollama host (optional, default http://localhost:11434).")
+	fmt.Fprintln(w, "  TEXTUALAI_PROVIDER     Default provider (optional): auto|openai|claude|gemini|mistral|ollama.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Core flags:")
-	fmt.Fprintln(w, "  --model <name>                 Model name. Prefix with openai:, gemini:, mistral:, or ollama: to force provider.")
-	fmt.Fprintln(w, "  --provider <auto|openai|gemini|mistral|ollama> Provider selection (default: auto).")
+	fmt.Fprintln(w, "  --model <name>                 Model name. Prefix with openai:, claude:, gemini:, mistral:, or ollama: to force provider.")
+	fmt.Fprintln(w, "  --provider <auto|openai|claude|gemini|mistral|ollama> Provider selection (default: auto).")
 	fmt.Fprintln(w, "  --prompt-template <path>       Go text/template file. Must contain {{.Input}}. Default: identity template.")
 	fmt.Fprintln(w, "  --message <text>               Send a single message.")
 	fmt.Fprintln(w, "  --file-message <path|->        Read message from file (or stdin when path is '-').")
@@ -1081,8 +1132,8 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  --max-tokens <int>             Max output tokens.")
 	fmt.Fprintln(w, "  --timeout <duration>           Per-request timeout (e.g. 30s, 2m).")
 	fmt.Fprintln(w, "  --json-schema <path>           JSON Schema file (Structured Outputs).")
-	fmt.Fprintln(w, "  --json-schema-name <name>      OpenAI/Mistral JSON schema wrapper name (default: response).")
-	fmt.Fprintln(w, "  --json-schema-strict[=bool]    OpenAI strict schema enforcement (default true when --json-schema is set).")
+	fmt.Fprintln(w, "  --json-schema-name <name>      OpenAI/Mistral/Claude schema wrapper/tool name (default: response).")
+	fmt.Fprintln(w, "  --json-schema-strict[=bool]    OpenAI/Mistral strict schema enforcement (default true when --json-schema is set).")
 	fmt.Fprintln(w, "  --verbose                      Print diagnostics to stderr.")
 	fmt.Fprintln(w, "  --version                      Print version.")
 	fmt.Fprintln(w)
@@ -1095,6 +1146,13 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "  --openai-safety-identifier <id>        safety_identifier")
 	fmt.Fprintln(w, "  --openai-metadata key=value            metadata (repeatable)")
 	fmt.Fprintln(w, "  --openai-include <csv>                 include fields (comma-separated)")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Claude-only flags:")
+	fmt.Fprintln(w, "  --claude-base-url <url>         Base URL (overrides ANTHROPIC_BASE_URL). Default https://api.anthropic.com")
+	fmt.Fprintln(w, "  --claude-api-version <v>        anthropic-version header (overrides ANTHROPIC_VERSION). Default 2023-06-01")
+	fmt.Fprintln(w, "  --claude-stream[=bool]          Enable/disable streaming (default true).")
+	fmt.Fprintln(w, "  --claude-top-k <int>            top_k")
+	fmt.Fprintln(w, "  --claude-stop <csv>             stop_sequences (comma-separated).")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Gemini-only flags:")
 	fmt.Fprintln(w, "  --gemini-base-url <url>         Base URL (default https://generativelanguage.googleapis.com).")
@@ -1135,6 +1193,9 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "Examples:")
 	fmt.Fprintln(w, "  # OpenAI one-shot")
 	fmt.Fprintln(w, "  OPENAI_API_KEY=... textualai --model openai:gpt-4.1 --message \"Write a haiku about terminals\"")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  # Claude one-shot")
+	fmt.Fprintln(w, "  ANTHROPIC_API_KEY=... textualai --model claude:claude-3-5-sonnet-latest --message \"Write a haiku about terminals\"")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "  # Gemini one-shot")
 	fmt.Fprintln(w, "  GEMINI_API_KEY=... textualai --model gemini:gemini-2.5-flash --message \"Write a haiku about terminals\"")
@@ -1243,6 +1304,14 @@ func ResolveProvider(providerFlag string, model string) (ProviderKind, string, e
 		return ProviderOpenAI, strings.TrimSpace(model[len("openai:"):]), nil
 	case strings.HasPrefix(lower, "oa:"):
 		return ProviderOpenAI, strings.TrimSpace(model[len("oa:"):]), nil
+	case strings.HasPrefix(lower, "claude:"):
+		return ProviderClaude, strings.TrimSpace(model[len("claude:"):]), nil
+	case strings.HasPrefix(lower, "cl:"):
+		return ProviderClaude, strings.TrimSpace(model[len("cl:"):]), nil
+	case strings.HasPrefix(lower, "anthropic:"):
+		return ProviderClaude, strings.TrimSpace(model[len("anthropic:"):]), nil
+	case strings.HasPrefix(lower, "an:"):
+		return ProviderClaude, strings.TrimSpace(model[len("an:"):]), nil
 	case strings.HasPrefix(lower, "gemini:"):
 		return ProviderGemini, strings.TrimSpace(model[len("gemini:"):]), nil
 	case strings.HasPrefix(lower, "ge:"):
@@ -1261,6 +1330,8 @@ func ResolveProvider(providerFlag string, model string) (ProviderKind, string, e
 		// fallthrough to heuristics below
 	case "openai":
 		return ProviderOpenAI, model, nil
+	case "claude", "anthropic":
+		return ProviderClaude, model, nil
 	case "gemini":
 		return ProviderGemini, model, nil
 	case "mistral":
@@ -1268,17 +1339,21 @@ func ResolveProvider(providerFlag string, model string) (ProviderKind, string, e
 	case "ollama":
 		return ProviderOllama, model, nil
 	default:
-		return ProviderAuto, "", fmt.Errorf("unknown provider %q (expected auto|openai|gemini|mistral|ollama)", providerFlag)
+		return ProviderAuto, "", fmt.Errorf("unknown provider %q (expected auto|openai|claude|gemini|mistral|ollama)", providerFlag)
 	}
 
 	// Heuristics for auto mode.
 	// We keep this deliberately simple and deterministic:
 	//   - OpenAI: models starting with gpt* or o* (o1, o3, etc.)
+	//   - Claude: models starting with claude*
 	//   - Gemini: models starting with gemini*
 	//   - Mistral: models starting with mistral*, codestral*, ministral*, devstral*, magistral*
 	//   - Ollama: everything else
 	if strings.HasPrefix(lower, "gpt") || strings.HasPrefix(lower, "o") {
 		return ProviderOpenAI, model, nil
+	}
+	if strings.HasPrefix(lower, "claude") {
+		return ProviderClaude, model, nil
 	}
 	if strings.HasPrefix(lower, "gemini") {
 		return ProviderGemini, model, nil
@@ -1419,6 +1494,115 @@ func DefaultOpenAIBuilder(
 	}
 	if strings.TrimSpace(cfg.OpenAIInclude) != "" {
 		proc = proc.WithInclude(splitCSV(cfg.OpenAIInclude)...)
+	}
+
+	return proc, nil
+}
+
+// DefaultClaudeBuilder builds the default Claude / Anthropic processor using cfg.
+func DefaultClaudeBuilder(
+	_ context.Context,
+	cfg Config,
+	model string,
+	templateStr string,
+	jsonSchema map[string]any,
+	getenv func(string) string,
+	stderr io.Writer,
+) (textual.Processor[textual.String], error) {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+
+	// Claude key check is performed again by the processor, but the CLI gives a
+	// more actionable error message.
+	if len(strings.TrimSpace(getenv("ANTHROPIC_API_KEY"))) < 10 {
+		return nil, errors.New("missing or invalid ANTHROPIC_API_KEY (required for Claude provider)")
+	}
+
+	procPtr, err := textualclaude.NewResponseProcessor[textual.String](model, templateStr)
+	if err != nil {
+		return nil, err
+	}
+	proc := *procPtr
+
+	// Streaming aggregation.
+	switch strings.ToLower(cfg.AggregateType) {
+	case "line":
+		proc = proc.WithAggregateType(textualclaude.Line)
+	default:
+		proc = proc.WithAggregateType(textualclaude.Word)
+	}
+
+	// Role.
+	if r := strings.ToLower(strings.TrimSpace(cfg.Role)); r != "" {
+		switch r {
+		case "user":
+			proc = proc.WithRole(textualclaude.RoleUser)
+		case "assistant":
+			proc = proc.WithRole(textualclaude.RoleAssistant)
+		case "system":
+			fmt.Fprintf(stderr, "Warning: unsupported --role %q for Claude; use --instructions for system prompts; using default\n", cfg.Role)
+		default:
+			fmt.Fprintf(stderr, "Warning: unsupported --role %q for Claude; using default\n", cfg.Role)
+		}
+	}
+
+	// Base URL override.
+	if strings.TrimSpace(cfg.ClaudeBaseURL) != "" {
+		proc = proc.WithBaseURL(cfg.ClaudeBaseURL)
+	}
+	// API version override.
+	if strings.TrimSpace(cfg.ClaudeAPIVersion) != "" {
+		proc = proc.WithAPIVersion(cfg.ClaudeAPIVersion)
+	}
+
+	// Instructions (system prompt).
+	if strings.TrimSpace(cfg.Instructions) != "" {
+		proc = proc.WithSystem(cfg.Instructions)
+	}
+
+	// Streaming toggle.
+	if cfg.ClaudeStream.IsSet() {
+		proc = proc.WithStream(cfg.ClaudeStream.Value())
+	}
+
+	// Sampling / common controls.
+	if cfg.Temperature.IsSet() {
+		proc = proc.WithTemperature(cfg.Temperature.Value())
+	}
+	if cfg.TopP.IsSet() {
+		proc = proc.WithTopP(cfg.TopP.Value())
+	}
+	if cfg.MaxTokens.IsSet() {
+		proc = proc.WithMaxTokens(cfg.MaxTokens.Value())
+	}
+
+	// Claude-specific controls.
+	if cfg.ClaudeTopK.IsSet() {
+		proc = proc.WithTopK(cfg.ClaudeTopK.Value())
+	}
+	if strings.TrimSpace(cfg.ClaudeStop) != "" {
+		proc = proc.WithStopSequences(splitCSV(cfg.ClaudeStop)...)
+	}
+
+	// Structured outputs / JSON schema.
+	// Claude doesn't have a first-class JSON schema output field. A robust portable
+	// approach is to declare a JSON schema tool and force the model to call it.
+	if jsonSchema != nil {
+		toolName := strings.TrimSpace(cfg.JSONSchemaName)
+		if toolName == "" {
+			toolName = "response"
+		}
+		proc = proc.WithTools(textualclaude.Tool{
+			Name:        toolName,
+			Description: "Return a response that matches the provided JSON Schema.",
+			InputSchema: jsonSchema,
+		})
+		proc = proc.WithToolChoice(textualclaude.ToolChoice{
+			Type: "tool",
+			Name: toolName,
+		})
+		proc = proc.WithEmitToolUse(true)
 	}
 
 	return proc, nil
