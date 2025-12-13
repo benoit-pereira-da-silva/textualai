@@ -14,129 +14,39 @@
 
 // Package cli implements the `textualai` command-line interface runtime.
 //
-// `textualai` is a small streaming chat CLI that can target:
-//   - OpenAI (Responses API), or
-//   - Claude / Anthropic (Messages API), or
-//   - Gemini (GenerateContent API), or
-//   - Mistral (Chat Completions API), or
-//   - Ollama (local HTTP API: /api/chat or /api/generate)
+// textualai is a small streaming CLI that can target multiple providers with a
+// single command line.
 //
-// It is built on top of the textual pipeline concept used throughout this repo.
+// Interoperability goals:
 //
-// # Embedding and extension
+//   - Input: send either a raw string (--message) or a JSON value (--object /
+//     --object-file). When using a template (--template / --template-file), the
+//     JSON value becomes the Go template root ({{.}}). If the value is a string,
+//     {{.}} is that string; otherwise {{.}} is the parsed JSON value.
 //
-// This package is designed to be reused by third parties that want to ship a
-// similar CLI while customizing the processing graph (textual.Chain /
-// textual.Router).
+//   - Output: stream plain text by default, or request and validate schema-based
+//     structured output with --output-schema.
 //
-// The default behavior is exposed by:
-//
-//	os.Exit(cli.Run(os.Args, os.Stdout, os.Stderr))
-//
-// For customization, construct a Runner with options:
-//
-//	r := cli.NewRunner(
-//		cli.WithGraphComposer(func(ctx context.Context, cfg cli.Config, p cli.ProviderKind, base textual.Processor[textual.String], stderr io.Writer) (textual.Processor[textual.String], error) {
-//			// Wrap the base provider processor into a bigger graph.
-//			return textual.NewChain(myPreProcessor, base), nil
-//		}),
-//	)
-//
-//	os.Exit(r.Run(os.Args, os.Stdout, os.Stderr))
-//
-// See README.md in this directory for concrete, copy/paste-ready examples.
-//
-// # Provider selection
-//
-// The provider can be selected explicitly with --provider, or inferred from the
-// --model value.
-//
-// Recommended and deterministic form:
-//
-//	textualai --model openai:gpt-4.1 ...
-//	textualai --model claude:claude-3-5-sonnet-latest ...
-//	textualai --model gemini:gemini-2.5-flash ...
-//	textualai --model mistral:mistral-small-latest ...
-//	textualai --model ollama:llama3.1 ...
-//
-// When no prefix is used and --provider is "auto" (default), the provider is
-// inferred using simple heuristics:
-//
-//   - model names starting with "gpt" or "o" => OpenAI
-//   - model names starting with "claude" => Claude / Anthropic
-//   - model names starting with "gemini" => Gemini
-//   - model names starting with "mistral", "codestral", "ministral", "devstral", "magistral" => Mistral
-//   - everything else => Ollama
-//
-// # Environment variables
-//
-// OpenAI:
-//   - OPENAI_API_KEY (required when using the OpenAI provider)
-//
-// Claude / Anthropic:
-//   - ANTHROPIC_API_KEY (required when using the Claude provider)
-//   - ANTHROPIC_BASE_URL (optional; default: https://api.anthropic.com)
-//   - ANTHROPIC_VERSION (optional; default: 2023-06-01)
-//
-// Gemini:
-//   - GEMINI_API_KEY (required when using the Gemini provider)
-//
-// Mistral:
-//   - MISTRAL_API_KEY (required when using the Mistral provider)
-//   - MISTRAL_BASE_URL (optional; default: https://api.mistral.ai)
-//
-// Ollama:
-//   - OLLAMA_HOST (optional; default: http://localhost:11434)
-//
-// textualai itself:
-//   - TEXTUALAI_PROVIDER (optional; default provider when --provider is omitted)
-//     values: auto|openai|claude|gemini|mistral|ollama
-//
-// Usage
-//
-//	textualai help
-//	textualai --model openai:gpt-4.1 --message "Hello!"
-//	textualai --model claude:claude-3-5-sonnet-latest --message "Hello!"
-//	textualai --model gemini:gemini-2.5-flash --message "Hello!"
-//	textualai --model mistral:mistral-small-latest --message "Hello!"
-//	textualai --model ollama:llama3.1 --loop
-//
-// # Prompt templates
-//
-// The processors accept a Go text/template string with an {{.Input}} placeholder.
-// If --prompt-template is omitted, the default is a minimal identity template:
-//
-//	{{.Input}}
-//
-// The template is executed for every input message.
-//
-// # Streaming output semantics
-//
-// The underlying ResponseProcessors emit aggregated text snapshots (prefixes).
-// The default streamer turns those snapshots back into a stream by printing only
-// the delta between successive snapshots.
-//
-// Exit status
-//
-//	0 - success
-//	2 - CLI usage / argument error
-//	1 - runtime failure (HTTP error, missing API key, etc.)
+// Schema validation (input and output) uses github.com/google/jsonschema-go/jsonschema.
 package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
+	"text/template"
 	"time"
 
 	"github.com/benoit-pereira-da-silva/textual/pkg/textual"
@@ -145,6 +55,8 @@ import (
 	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/textualmistral"
 	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/textualollama"
 	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/textualopenai"
+
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
 // version is set at build time using:
@@ -156,8 +68,6 @@ var version = "dev"
 
 // Version returns the build-time version string printed by --version.
 func Version() string { return version }
-
-const defaultPromptTemplate = "{{.Input}}"
 
 // ProviderKind is the resolved provider used by the CLI.
 type ProviderKind int
@@ -188,8 +98,10 @@ func (p ProviderKind) String() string {
 	}
 }
 
-// Config contains every user-facing option. Many fields are "optional"
-// wrappers so we can preserve tri-state behavior (unset vs explicitly set).
+// Config contains user-facing options.
+//
+// This CLI intentionally avoids preserving backward compatibility with older
+// flag names: it focuses on provider interoperability, not historic flags.
 type Config struct {
 	Help    OptBool
 	Version OptBool
@@ -198,97 +110,65 @@ type Config struct {
 	Provider string
 	Model    string
 
-	PromptTemplatePath string
+	// -----------------
+	// Interoperable input
+	// -----------------
 
-	Message         string
-	FileMessagePath string
-	FileEncoding    string
+	// Exactly one of these is used in one-shot mode:
+	//   - Message
+	//   - Object / ObjectFile
+	Message    string
+	Object     string
+	ObjectFile string
+
+	// Template is optional. When set, it renders the prompt from the input.
+	Template     string
+	TemplateFile string
+
+	// TemplateSchema validates the input JSON value (before templating).
+	TemplateSchema string
+
+	// -----------------
+	// Interoperable output
+	// -----------------
+
+	// OutputSchema requests schema-based structured output when the provider supports it
+	// and validates the final output against the schema locally.
+	OutputSchema string
+
+	// -----------------
+	// Runtime controls
+	// -----------------
 
 	Loop          OptBool
 	ExitCommands  string
 	AggregateType string
 	Role          string
 	Instructions  string
-
-	Timeout OptDuration
+	Timeout       OptDuration
 
 	Temperature OptFloat64
 	TopP        OptFloat64
 	MaxTokens   OptInt
 
-	// Structured Outputs / JSON Schema.
-	JSONSchemaPath   string
-	JSONSchemaName   string
-	JSONSchemaStrict OptBool
-
 	// -----------------
-	// OpenAI-only flags
-	// -----------------
-
-	OpenAIServiceTier          string
-	OpenAITruncation           string
-	OpenAIStore                OptBool
-	OpenAIPromptCacheKey       string
-	OpenAIPromptCacheRetention string
-	OpenAISafetyIdentifier     string
-	OpenAIMetadata             KVStringMap
-	OpenAIInclude              string
-
-	// -----------------
-	// Claude-only flags
+	// Provider-specific overrides (kept minimal)
 	// -----------------
 
 	ClaudeBaseURL    string
 	ClaudeAPIVersion string
 	ClaudeStream     OptBool
-	ClaudeTopK       OptInt
-	ClaudeStop       string
 
-	// -----------------
-	// Gemini-only flags
-	// -----------------
+	GeminiBaseURL    string
+	GeminiAPIVersion string
+	GeminiStream     OptBool
 
-	GeminiBaseURL          string
-	GeminiAPIVersion       string
-	GeminiStream           OptBool
-	GeminiTopK             OptInt
-	GeminiStop             string
-	GeminiCandidateCount   OptInt
-	GeminiResponseMIMEType string
+	MistralBaseURL string
+	MistralStream  OptBool
 
-	// -----------------
-	// Mistral-only flags
-	// -----------------
-
-	MistralBaseURL           string
-	MistralStream            OptBool
-	MistralSafePrompt        OptBool
-	MistralRandomSeed        OptInt
-	MistralPromptMode        string
-	MistralParallelToolCalls OptBool
-	MistralFrequencyPenalty  OptFloat64
-	MistralPresencePenalty   OptFloat64
-	MistralStop              string
-	MistralN                 OptInt
-	MistralResponseFormat    string
-
-	// -----------------
-	// Ollama-only flags
-	// -----------------
-
-	OllamaHost      string
-	OllamaEndpoint  string
-	OllamaKeepAlive string
-	OllamaThink     OptBool
-	OllamaStream    OptBool
-	OllamaFormat    string
-
-	OllamaTopK     OptInt
-	OllamaNumCtx   OptInt
-	OllamaSeed     OptInt
-	OllamaStop     string
-	OllamaRaw      OptBool
-	OllamaExtraOpt KVAnyMap
+	OllamaHost     string
+	OllamaEndpoint string
+	OllamaStream   OptBool
 }
 
 // OptBool is a flag.Value that tracks whether it has been explicitly set.
@@ -326,8 +206,7 @@ func (b *OptBool) String() string {
 // IsSet reports whether the flag has been explicitly set by the user.
 func (b OptBool) IsSet() bool { return b.set }
 
-// Value returns the parsed flag value (default: false unless set by parsing
-// logic).
+// Value returns the parsed flag value.
 func (b OptBool) Value() bool { return b.val }
 
 // Enabled is a convenience shortcut for IsSet() && Value().
@@ -378,7 +257,6 @@ func (f *OptFloat64) String() string {
 	if !f.set {
 		return ""
 	}
-	// Keep it stable and readable.
 	return strconv.FormatFloat(f.val, 'f', -1, 64)
 }
 
@@ -412,118 +290,16 @@ func (d OptDuration) IsSet() bool { return d.set }
 
 func (d OptDuration) Value() time.Duration { return d.val }
 
-// KVStringMap collects repeated key=value pairs into a map[string]string.
-type KVStringMap map[string]string
-
-func (m *KVStringMap) Set(s string) error {
-	if *m == nil {
-		*m = make(map[string]string)
-	}
-	key, val, ok := strings.Cut(s, "=")
-	if !ok {
-		return fmt.Errorf("expected key=value, got %q", s)
-	}
-	key = strings.TrimSpace(key)
-	if key == "" {
-		return fmt.Errorf("empty key in %q", s)
-	}
-	(*m)[key] = strings.TrimSpace(val)
-	return nil
-}
-
-func (m *KVStringMap) String() string {
-	if m == nil || *m == nil {
-		return ""
-	}
-	// Non-deterministic ordering is fine for help output.
-	var parts []string
-	for k, v := range *m {
-		parts = append(parts, k+"="+v)
-	}
-	return strings.Join(parts, ",")
-}
-
-// KVAnyMap collects repeated key=value pairs into a map[string]any.
-// Values are parsed as:
-//   - JSON (objects/arrays) when value starts with "{" or "["
-//   - bool, int, float when possible
-//   - string otherwise
-type KVAnyMap map[string]any
-
-func (m *KVAnyMap) Set(s string) error {
-	if *m == nil {
-		*m = make(map[string]any)
-	}
-	key, raw, ok := strings.Cut(s, "=")
-	if !ok {
-		return fmt.Errorf("expected key=value, got %q", s)
-	}
-	key = strings.TrimSpace(key)
-	if key == "" {
-		return fmt.Errorf("empty key in %q", s)
-	}
-	raw = strings.TrimSpace(raw)
-	(*m)[key] = parseScalarOrJSON(raw)
-	return nil
-}
-
-func (m *KVAnyMap) String() string {
-	if m == nil || *m == nil {
-		return ""
-	}
-	var parts []string
-	for k, v := range *m {
-		parts = append(parts, fmt.Sprintf("%s=%v", k, v))
-	}
-	return strings.Join(parts, ",")
-}
-
-func parseScalarOrJSON(s string) any {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return ""
-	}
-
-	// JSON object/array.
-	if strings.HasPrefix(s, "{") || strings.HasPrefix(s, "[") {
-		var v any
-		if err := json.Unmarshal([]byte(s), &v); err == nil {
-			return v
-		}
-		// Fall back to string if malformed.
-		return s
-	}
-
-	// bool
-	if b, err := strconv.ParseBool(s); err == nil {
-		return b
-	}
-
-	// int
-	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
-		return int(i)
-	}
-
-	// float
-	if f, err := strconv.ParseFloat(s, 64); err == nil {
-		return f
-	}
-
-	return s
-}
-
-// Run is the default `textualai` CLI entry point.
+// Run is the default textualai CLI entry point.
 //
 // It is intended to be called from a tiny main:
 //
 //	func main() { os.Exit(cli.Run(os.Args, os.Stdout, os.Stderr)) }
-//
-// For embedding and customization, build a Runner and call (*Runner).Run.
 func Run(argv []string, stdout io.Writer, stderr io.Writer) int {
 	return NewRunner().Run(argv, stdout, stderr)
 }
 
-// PrintUsage prints the default usage help.
+// PrintUsage prints the CLI usage help.
 func PrintUsage(w io.Writer) {
 	printUsage(w)
 }
@@ -534,76 +310,35 @@ type ProviderBuilder func(
 	cfg Config,
 	model string,
 	templateStr string,
-	jsonSchema map[string]any,
+	outputSchema map[string]any,
 	getenv func(string) string,
 	stderr io.Writer,
 ) (textual.Processor[textual.String], error)
 
-// GraphComposer optionally wraps the base provider processor into a bigger
-// processing graph.
-//
-// Typical uses:
-//   - Add a textual.Chain with pre-processing stages before the provider.
-//   - Add a textual.Router to intercept local commands (e.g. "/help").
-//   - Add post-processing stages (be mindful of snapshot vs delta semantics;
-//     see Streamer).
-type GraphComposer func(
-	ctx context.Context,
-	cfg Config,
-	provider ProviderKind,
-	base textual.Processor[textual.String],
-	stderr io.Writer,
-) (textual.Processor[textual.String], error)
-
-// Streamer runs one message through the processor and streams the output to
-// outw. It returns the final accumulated text.
+// Streamer runs one prompt through the processor and streams the output to
+// outw. It returns the final accumulated text (last snapshot).
 type Streamer func(
 	ctx context.Context,
 	proc textual.Processor[textual.String],
-	message string,
+	prompt string,
 	outw *bufio.Writer,
 ) (string, error)
 
 // Runner is a configurable CLI runtime that can be embedded by third parties.
-//
-// Use NewRunner to obtain a Runner preconfigured with the default behavior, and
-// then inject custom builders / graph composition as needed.
 type Runner struct {
-	// Stdin is used for --loop input and for --file-message - when path is "-".
-	// Defaults to os.Stdin.
-	Stdin io.Reader
-
-	// Getenv is used to retrieve environment variables (OPENAI_API_KEY,
-	// ANTHROPIC_API_KEY, GEMINI_API_KEY, MISTRAL_API_KEY, TEXTUALAI_PROVIDER, ...).
-	// Defaults to os.Getenv.
+	Stdin  io.Reader
 	Getenv func(string) string
+	Usage  func(io.Writer)
 
-	// Usage prints help output. Defaults to PrintUsage.
-	Usage func(io.Writer)
-
-	// Parse parses flags from argv[1:] and returns the resulting Config.
-	// Defaults to ParseWithEnv using the Runner's Getenv.
-	Parse func(args []string) (Config, error)
-
-	// ProviderResolver resolves the provider + normalizes the model name.
-	// Defaults to ResolveProvider.
+	Parse            func(args []string) (Config, error)
 	ProviderResolver func(providerFlag string, model string) (ProviderKind, string, error)
 
-	// Provider builders build the provider-specific processors.
-	// Defaults to DefaultOpenAIBuilder, DefaultClaudeBuilder, DefaultGeminiBuilder,
-	// DefaultMistralBuilder, and DefaultOllamaBuilder.
 	OpenAIBuilder  ProviderBuilder
 	ClaudeBuilder  ProviderBuilder
 	GeminiBuilder  ProviderBuilder
 	MistralBuilder ProviderBuilder
 	OllamaBuilder  ProviderBuilder
 
-	// GraphComposer can wrap the base provider processor into a larger graph
-	// (chain/router/etc). Defaults to nil (no extra wrapping).
-	GraphComposer GraphComposer
-
-	// Streamer controls streaming output semantics.
-	// Defaults to DefaultStreamer (delta printer on snapshots).
 	Streamer Streamer
 }
 
@@ -611,7 +346,7 @@ type Runner struct {
 type Option func(*Runner)
 
 // NewRunner constructs a Runner configured with the default textualai behavior.
-// Use options to override specific extension points (graph, streamer, ...).
+// Use options to override specific extension points.
 func NewRunner(opts ...Option) *Runner {
 	r := &Runner{
 		Stdin:            os.Stdin,
@@ -627,74 +362,13 @@ func NewRunner(opts ...Option) *Runner {
 	}
 
 	for _, opt := range opts {
-		if opt == nil {
-			continue
+		if opt != nil {
+			opt(r)
 		}
-		opt(r)
 	}
 
 	r.ensureDefaults()
 	return r
-}
-
-// WithStdin overrides the Runner stdin.
-func WithStdin(r io.Reader) Option {
-	return func(rr *Runner) { rr.Stdin = r }
-}
-
-// WithGetenv overrides the environment getter.
-func WithGetenv(getenv func(string) string) Option {
-	return func(rr *Runner) { rr.Getenv = getenv }
-}
-
-// WithUsage overrides the usage printer.
-func WithUsage(usage func(io.Writer)) Option {
-	return func(rr *Runner) { rr.Usage = usage }
-}
-
-// WithParse overrides the argument parser.
-func WithParse(parse func(args []string) (Config, error)) Option {
-	return func(rr *Runner) { rr.Parse = parse }
-}
-
-// WithProviderResolver overrides the provider resolver.
-func WithProviderResolver(resolver func(providerFlag string, model string) (ProviderKind, string, error)) Option {
-	return func(rr *Runner) { rr.ProviderResolver = resolver }
-}
-
-// WithOpenAIBuilder overrides the OpenAI processor builder.
-func WithOpenAIBuilder(builder ProviderBuilder) Option {
-	return func(rr *Runner) { rr.OpenAIBuilder = builder }
-}
-
-// WithClaudeBuilder overrides the Claude / Anthropic processor builder.
-func WithClaudeBuilder(builder ProviderBuilder) Option {
-	return func(rr *Runner) { rr.ClaudeBuilder = builder }
-}
-
-// WithGeminiBuilder overrides the Gemini processor builder.
-func WithGeminiBuilder(builder ProviderBuilder) Option {
-	return func(rr *Runner) { rr.GeminiBuilder = builder }
-}
-
-// WithMistralBuilder overrides the Mistral processor builder.
-func WithMistralBuilder(builder ProviderBuilder) Option {
-	return func(rr *Runner) { rr.MistralBuilder = builder }
-}
-
-// WithOllamaBuilder overrides the Ollama processor builder.
-func WithOllamaBuilder(builder ProviderBuilder) Option {
-	return func(rr *Runner) { rr.OllamaBuilder = builder }
-}
-
-// WithGraphComposer overrides the graph composer.
-func WithGraphComposer(composer GraphComposer) Option {
-	return func(rr *Runner) { rr.GraphComposer = composer }
-}
-
-// WithStreamer overrides the streamer implementation.
-func WithStreamer(streamer Streamer) Option {
-	return func(rr *Runner) { rr.Streamer = streamer }
 }
 
 func (r *Runner) ensureDefaults() {
@@ -730,23 +404,11 @@ func (r *Runner) ensureDefaults() {
 	}
 	if r.Parse == nil {
 		get := r.Getenv
-		r.Parse = func(args []string) (Config, error) {
-			return parseCLI(args, get)
-		}
+		r.Parse = func(args []string) (Config, error) { return parseCLI(args, get) }
 	}
 }
 
 // Run executes the CLI against argv.
-//
-// The expected call site is:
-//
-//	os.Exit(r.Run(os.Args, os.Stdout, os.Stderr))
-//
-// Exit status:
-//
-//	0 - success
-//	2 - CLI usage / argument error
-//	1 - runtime failure (HTTP error, missing API key, etc.)
 func (r *Runner) Run(argv []string, stdout io.Writer, stderr io.Writer) int {
 	r.ensureDefaults()
 
@@ -765,7 +427,6 @@ func (r *Runner) Run(argv []string, stdout io.Writer, stderr io.Writer) int {
 
 	cfg, err := r.Parse(argv[1:])
 	if err != nil {
-		// Parse already returns user-friendly errors; show usage too.
 		fmt.Fprintln(stderr, "Error:", err)
 		fmt.Fprintln(stderr)
 		r.Usage(stderr)
@@ -776,13 +437,11 @@ func (r *Runner) Run(argv []string, stdout io.Writer, stderr io.Writer) int {
 		r.Usage(stdout)
 		return 0
 	}
-
 	if cfg.Version.Enabled() {
 		fmt.Fprintln(stdout, version)
 		return 0
 	}
 
-	// Validate required fields.
 	if strings.TrimSpace(cfg.Model) == "" {
 		fmt.Fprintln(stderr, "Error: --model is required")
 		fmt.Fprintln(stderr)
@@ -790,41 +449,42 @@ func (r *Runner) Run(argv []string, stdout io.Writer, stderr io.Writer) int {
 		return 2
 	}
 
-	// Load prompt template (defaults to the built-in identity template).
-	templateStr, err := loadPromptTemplate(cfg.PromptTemplatePath)
-	if err != nil {
-		fmt.Fprintln(stderr, "Error:", err)
-		return 2
-	}
-
-	// Load message file if provided. We do it once so --loop can still reuse it
-	// as a first message without re-reading the file.
-	fileMsg := ""
-	if strings.TrimSpace(cfg.FileMessagePath) != "" {
-		msg, err := readMessageFile(cfg.FileMessagePath, cfg.FileEncoding, r.Stdin)
+	// Load and compile output schema (optional).
+	var outputSchemaMap map[string]any
+	var outputResolved *jsonschema.Resolved
+	if strings.TrimSpace(cfg.OutputSchema) != "" {
+		compiled, err := loadCompiledSchema(cfg.OutputSchema, r.Stdin)
 		if err != nil {
 			fmt.Fprintln(stderr, "Error:", err)
 			return 2
 		}
-		fileMsg = msg
+		outputSchemaMap = compiled.SchemaMap
+		outputResolved = compiled.Resolved
+	}
+
+	// Parse and validate the optional template schema (input validation).
+	var inputResolved *jsonschema.Resolved
+	if strings.TrimSpace(cfg.TemplateSchema) != "" {
+		compiled, err := loadCompiledSchema(cfg.TemplateSchema, r.Stdin)
+		if err != nil {
+			fmt.Fprintln(stderr, "Error:", err)
+			return 2
+		}
+		inputResolved = compiled.Resolved
+	}
+
+	// Prepare renderer (optional template). We parse templates once per run.
+	render, err := prepareRenderer(cfg, r.Stdin)
+	if err != nil {
+		fmt.Fprintln(stderr, "Error:", err)
+		return 2
 	}
 
 	// Root context reacts to Ctrl+C (SIGINT) and SIGTERM.
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Prepare optional JSON schema.
-	var jsonSchema map[string]any
-	if strings.TrimSpace(cfg.JSONSchemaPath) != "" {
-		schema, err := loadJSONSchema(cfg.JSONSchemaPath)
-		if err != nil {
-			fmt.Fprintln(stderr, "Error:", err)
-			return 2
-		}
-		jsonSchema = schema
-	}
-
-	// Resolve provider and normalize model (strip openai:/claude:/gemini:/mistral:/ollama: prefix).
+	// Resolve provider and normalize model (strip openai:/claude:/... prefix).
 	prov, modelName, err := r.ProviderResolver(cfg.Provider, cfg.Model)
 	if err != nil {
 		fmt.Fprintln(stderr, "Error:", err)
@@ -834,43 +494,35 @@ func (r *Runner) Run(argv []string, stdout io.Writer, stderr io.Writer) int {
 	if cfg.Verbose.Enabled() {
 		fmt.Fprintf(stderr, "Provider: %s\n", prov.String())
 		fmt.Fprintf(stderr, "Model: %s\n", modelName)
-		if cfg.PromptTemplatePath == "" {
-			fmt.Fprintf(stderr, "Prompt template: (default)\n")
+		if cfg.Template != "" {
+			fmt.Fprintf(stderr, "Template: (inline)\n")
+		} else if cfg.TemplateFile != "" {
+			fmt.Fprintf(stderr, "Template: %s\n", cfg.TemplateFile)
 		} else {
-			fmt.Fprintf(stderr, "Prompt template: %s\n", cfg.PromptTemplatePath)
+			fmt.Fprintf(stderr, "Template: (none)\n")
+		}
+		if cfg.OutputSchema != "" {
+			fmt.Fprintf(stderr, "Output schema: %s\n", cfg.OutputSchema)
+		}
+		if cfg.TemplateSchema != "" {
+			fmt.Fprintf(stderr, "Template schema: %s\n", cfg.TemplateSchema)
 		}
 		fmt.Fprintln(stderr)
 	}
 
-	// Prepare a buffered writer for smooth streaming.
-	outw := bufio.NewWriter(stdout)
-	defer outw.Flush()
-
-	// Pick initial message (non-loop).
-	initialMsg := combineMessage(cfg.Message, fileMsg)
-
-	// If no message was provided, allow interactive input in loop mode.
-	if !cfg.Loop.Enabled() && strings.TrimSpace(initialMsg) == "" {
-		fmt.Fprintln(stderr, "Error: provide --message or --file-message, or use --loop")
-		fmt.Fprintln(stderr)
-		r.Usage(stderr)
-		return 2
-	}
-
-	// Build the provider processor (default behavior) and optionally wrap it
-	// into a larger graph.
+	// Build the provider processor (default behavior).
 	var proc textual.Processor[textual.String]
 	switch prov {
 	case ProviderOpenAI:
-		proc, err = r.OpenAIBuilder(rootCtx, cfg, modelName, templateStr, jsonSchema, r.Getenv, stderr)
+		proc, err = r.OpenAIBuilder(rootCtx, cfg, modelName, "{{.Input}}", outputSchemaMap, r.Getenv, stderr)
 	case ProviderClaude:
-		proc, err = r.ClaudeBuilder(rootCtx, cfg, modelName, templateStr, jsonSchema, r.Getenv, stderr)
+		proc, err = r.ClaudeBuilder(rootCtx, cfg, modelName, "{{.Input}}", outputSchemaMap, r.Getenv, stderr)
 	case ProviderGemini:
-		proc, err = r.GeminiBuilder(rootCtx, cfg, modelName, templateStr, jsonSchema, r.Getenv, stderr)
+		proc, err = r.GeminiBuilder(rootCtx, cfg, modelName, "{{.Input}}", outputSchemaMap, r.Getenv, stderr)
 	case ProviderMistral:
-		proc, err = r.MistralBuilder(rootCtx, cfg, modelName, templateStr, jsonSchema, r.Getenv, stderr)
+		proc, err = r.MistralBuilder(rootCtx, cfg, modelName, "{{.Input}}", outputSchemaMap, r.Getenv, stderr)
 	case ProviderOllama:
-		proc, err = r.OllamaBuilder(rootCtx, cfg, modelName, templateStr, jsonSchema, r.Getenv, stderr)
+		proc, err = r.OllamaBuilder(rootCtx, cfg, modelName, "{{.Input}}", outputSchemaMap, r.Getenv, stderr)
 	default:
 		err = fmt.Errorf("unable to resolve provider")
 	}
@@ -883,47 +535,80 @@ func (r *Runner) Run(argv []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
-	if r.GraphComposer != nil {
-		wrapped, err := r.GraphComposer(rootCtx, cfg, prov, proc, stderr)
-		if err != nil {
-			fmt.Fprintln(stderr, "Error:", err)
-			return 1
-		}
-		if wrapped == nil {
-			fmt.Fprintln(stderr, "Error: nil processor (graph composer returned nil)")
-			return 1
-		}
-		proc = wrapped
-	}
+	// Prepare a buffered writer for smooth streaming.
+	outw := bufio.NewWriter(stdout)
+	defer outw.Flush()
 
 	// One-shot vs loop.
 	if cfg.Loop.Enabled() {
-		return interactiveLoop(rootCtx, cfg, func(ctx context.Context, msg string) (string, error) {
-			return r.Streamer(ctx, proc, msg, outw)
-		}, initialMsg, r.Stdin, outw, stderr)
+		return interactiveLoop(
+			rootCtx,
+			cfg,
+			proc,
+			render,
+			inputResolved,
+			outputResolved,
+			r.Stdin,
+			outw,
+			stderr,
+			r.Streamer,
+		)
+	}
+
+	// One-shot: build input value, validate (optional), render prompt.
+	inputVal, err := loadOneShotInput(cfg, r.Stdin)
+	if err != nil {
+		fmt.Fprintln(stderr, "Error:", err)
+		fmt.Fprintln(stderr)
+		r.Usage(stderr)
+		return 2
+	}
+	if inputVal == nil {
+		fmt.Fprintln(stderr, "Error: provide --message or --object/--object-file, or use --loop")
+		fmt.Fprintln(stderr)
+		r.Usage(stderr)
+		return 2
+	}
+
+	// Optional input validation.
+	if inputResolved != nil {
+		if err := validateAgainstSchema(inputResolved, inputVal); err != nil {
+			fmt.Fprintln(stderr, "Error: input does not match --template-schema:", err)
+			return 2
+		}
+	}
+
+	prompt, err := render(inputVal)
+	if err != nil {
+		fmt.Fprintln(stderr, "Error:", err)
+		return 2
 	}
 
 	ctx, cancel := withOptionalTimeout(rootCtx, cfg.Timeout)
 	defer cancel()
 
-	_, err = r.Streamer(ctx, proc, initialMsg, outw)
+	final, err := r.Streamer(ctx, proc, prompt, outw)
 	if err != nil {
 		fmt.Fprintln(stderr, "Error:", err)
 		return 1
 	}
 	fmt.Fprintln(outw) // final newline
-	outw.Flush()
+	_ = outw.Flush()
+
+	// Optional output validation.
+	if outputResolved != nil {
+		v, err := parseJSONAny(final)
+		if err != nil {
+			fmt.Fprintln(stderr, "Error: output is not valid JSON:", err)
+			return 1
+		}
+		if err := validateAgainstSchema(outputResolved, v); err != nil {
+			fmt.Fprintln(stderr, "Error: output does not match --output-schema:", err)
+			return 1
+		}
+	}
+
 	return 0
-}
-
-// Parse parses CLI args (as in os.Args[1:]) using os.Getenv defaults.
-func Parse(args []string) (Config, error) {
-	return parseCLI(args, os.Getenv)
-}
-
-// ParseWithEnv parses CLI args (as in os.Args[1:]) using the supplied getenv.
-func ParseWithEnv(args []string, getenv func(string) string) (Config, error) {
-	return parseCLI(args, getenv)
 }
 
 func parseCLI(args []string, getenv func(string) string) (Config, error) {
@@ -932,372 +617,159 @@ func parseCLI(args []string, getenv func(string) string) (Config, error) {
 	}
 
 	cfg := Config{
-		Provider: "auto",
-		// Sensible defaults for file reading.
-		FileEncoding:   "UTF-8",
-		AggregateType:  "word",
-		Role:           "user",
-		ExitCommands:   "exit,quit,/exit,/quit",
-		JSONSchemaName: "response",
+		Provider:      "auto",
+		AggregateType: "word",
+		Role:          "user",
+		ExitCommands:  "exit,quit,/exit,/quit",
 	}
-	// Environment defaults (kept minimal and explicit).
 	if v := strings.TrimSpace(getenv("TEXTUALAI_PROVIDER")); v != "" {
 		cfg.Provider = v
 	}
 
 	fs := flag.NewFlagSet("textualai", flag.ContinueOnError)
-	// We handle error rendering ourselves.
 	fs.SetOutput(io.Discard)
 
-	// Standard meta flags.
+	// Meta.
 	fs.Var(&cfg.Help, "help", "Show help.")
 	fs.Var(&cfg.Help, "h", "Show help (shorthand).")
 	fs.Var(&cfg.Version, "version", "Print version and exit.")
 	fs.Var(&cfg.Verbose, "verbose", "Enable diagnostic output to stderr.")
 
-	// Core selection flags.
+	// Provider selection.
 	fs.StringVar(&cfg.Provider, "provider", cfg.Provider, "Provider: auto|openai|claude|gemini|mistral|ollama. Can also be set via TEXTUALAI_PROVIDER.")
-	fs.StringVar(&cfg.Model, "model", cfg.Model, "Model name. Prefix with openai:, claude:, gemini:, mistral:, or ollama: to force provider (e.g. openai:gpt-4.1, claude:claude-3-5-sonnet-latest, gemini:gemini-2.5-flash, mistral:mistral-small-latest, ollama:llama3.1).")
+	fs.StringVar(&cfg.Model, "model", cfg.Model, "Model name. Prefix with openai:, claude:, gemini:, mistral:, or ollama: to force provider.")
 
-	// Input / prompt shaping.
-	fs.StringVar(&cfg.PromptTemplatePath, "prompt-template", cfg.PromptTemplatePath, "Path to a Go text/template file containing {{.Input}}. Default: identity template.")
-	fs.StringVar(&cfg.Message, "message", cfg.Message, "Message to send (one-shot).")
-	fs.StringVar(&cfg.FileMessagePath, "file-message", cfg.FileMessagePath, "Path to a file containing the message. Use '-' to read from stdin.")
-	fs.StringVar(&cfg.FileEncoding, "file-encoding", cfg.FileEncoding, "Encoding used for --file-message (default: UTF-8). See textual.ParseEncoding supported names.")
+	// Interoperable input.
+	fs.StringVar(&cfg.Message, "message", cfg.Message, "Raw message string (one-shot).")
+	fs.StringVar(&cfg.Object, "object", cfg.Object, "JSON value as a string (one-shot).")
+	fs.StringVar(&cfg.ObjectFile, "object-file", cfg.ObjectFile, "Path to a file containing a JSON value. Use '-' to read JSON from stdin (one-shot).")
+	fs.StringVar(&cfg.Template, "template", cfg.Template, "Go text/template string. The input JSON value is available as {{.}}.")
+	fs.StringVar(&cfg.TemplateFile, "template-file", cfg.TemplateFile, "Path to a Go text/template file. The input JSON value is available as {{.}}.")
+	fs.StringVar(&cfg.TemplateSchema, "template-schema", cfg.TemplateSchema, "Path to a JSON Schema file used to validate the input JSON before template execution.")
+
+	// Interoperable output.
+	fs.StringVar(&cfg.OutputSchema, "output-schema", cfg.OutputSchema, "Path to a JSON Schema file for requesting/validating structured output.")
+
+	// Runtime controls.
 	fs.Var(&cfg.Loop, "loop", "Loop mode: after a response completes, prompt for a new message on stdin.")
-	fs.StringVar(&cfg.ExitCommands, "exit-commands", cfg.ExitCommands, "Comma-separated commands that exit in --loop (default: exit,quit,/exit,/quit).")
+	fs.StringVar(&cfg.ExitCommands, "exit-commands", cfg.ExitCommands, "Comma-separated commands that exit in --loop.")
 	fs.StringVar(&cfg.AggregateType, "aggregate", cfg.AggregateType, "Streaming aggregation: word|line.")
 	fs.StringVar(&cfg.Role, "role", cfg.Role, "Role for the user message when the provider builds a default message (default: user).")
-	fs.StringVar(&cfg.Instructions, "instructions", cfg.Instructions, "System/developer instructions (OpenAI 'instructions', Claude 'system', Gemini 'systemInstruction', Mistral/Ollama 'system').")
+	fs.StringVar(&cfg.Instructions, "instructions", cfg.Instructions, "System/developer instructions (provider-specific mapping).")
 	fs.Var(&cfg.Timeout, "timeout", "Per-request timeout (e.g. 30s, 2m).")
 
 	// Common model controls.
-	fs.Var(&cfg.Temperature, "temperature", "Sampling temperature (provider-specific range, typical: 0.0..2.0).")
+	fs.Var(&cfg.Temperature, "temperature", "Sampling temperature (provider-specific range).")
 	fs.Var(&cfg.TopP, "top-p", "Nucleus sampling probability mass (0..1).")
 	fs.Var(&cfg.MaxTokens, "max-tokens", "Max output tokens (OpenAI: max_output_tokens, Claude: max_tokens, Gemini: generationConfig.maxOutputTokens, Mistral: max_tokens, Ollama: num_predict).")
 
-	// Structured outputs.
-	fs.StringVar(&cfg.JSONSchemaPath, "json-schema", cfg.JSONSchemaPath, "Path to a JSON Schema file for Structured Outputs. Applied to OpenAI, Claude, Gemini, Mistral, and Ollama when supported.")
-	fs.StringVar(&cfg.JSONSchemaName, "json-schema-name", cfg.JSONSchemaName, "Name for the OpenAI/Mistral/Claude schema wrapper/tool (default: response).")
-	// Default strict=true if the flag is provided without explicit value.
-	cfg.JSONSchemaStrict.val = true
-	fs.Var(&cfg.JSONSchemaStrict, "json-schema-strict", "OpenAI/Mistral: strict schema enforcement (default true when --json-schema is set).")
-
-	// OpenAI-only.
-	fs.StringVar(&cfg.OpenAIServiceTier, "openai-service-tier", cfg.OpenAIServiceTier, "OpenAI: service tier (auto|default|flex|priority).")
-	fs.StringVar(&cfg.OpenAITruncation, "openai-truncation", cfg.OpenAITruncation, "OpenAI: truncation strategy (auto|disabled).")
-	fs.Var(&cfg.OpenAIStore, "openai-store", "OpenAI: store the response (boolean).")
-	fs.StringVar(&cfg.OpenAIPromptCacheKey, "openai-prompt-cache-key", cfg.OpenAIPromptCacheKey, "OpenAI: prompt_cache_key.")
-	fs.StringVar(&cfg.OpenAIPromptCacheRetention, "openai-prompt-cache-retention", cfg.OpenAIPromptCacheRetention, "OpenAI: prompt_cache_retention (e.g. 24h).")
-	fs.StringVar(&cfg.OpenAISafetyIdentifier, "openai-safety-identifier", cfg.OpenAISafetyIdentifier, "OpenAI: safety_identifier.")
-	fs.Var(&cfg.OpenAIMetadata, "openai-metadata", "OpenAI: metadata key=value (repeatable).")
-	fs.StringVar(&cfg.OpenAIInclude, "openai-include", cfg.OpenAIInclude, "OpenAI: include fields (comma-separated).")
-
-	// Claude-only.
-	fs.StringVar(&cfg.ClaudeBaseURL, "claude-base-url", cfg.ClaudeBaseURL, "Claude/Anthropic: base URL (overrides ANTHROPIC_BASE_URL). Default: https://api.anthropic.com")
-	fs.StringVar(&cfg.ClaudeAPIVersion, "claude-api-version", cfg.ClaudeAPIVersion, "Claude/Anthropic: anthropic-version header (overrides ANTHROPIC_VERSION). Default: 2023-06-01")
+	// Provider-specific overrides (minimal).
+	fs.StringVar(&cfg.ClaudeBaseURL, "claude-base-url", cfg.ClaudeBaseURL, "Claude/Anthropic: base URL (overrides ANTHROPIC_BASE_URL).")
+	fs.StringVar(&cfg.ClaudeAPIVersion, "claude-api-version", cfg.ClaudeAPIVersion, "Claude/Anthropic: anthropic-version header (overrides ANTHROPIC_VERSION).")
 	fs.Var(&cfg.ClaudeStream, "claude-stream", "Claude/Anthropic: stream mode (true/false). Default is true.")
-	fs.Var(&cfg.ClaudeTopK, "claude-top-k", "Claude/Anthropic: top_k.")
-	fs.StringVar(&cfg.ClaudeStop, "claude-stop", cfg.ClaudeStop, "Claude/Anthropic: stop_sequences (comma-separated).")
 
-	// Gemini-only.
 	fs.StringVar(&cfg.GeminiBaseURL, "gemini-base-url", cfg.GeminiBaseURL, "Gemini: base URL (default: https://generativelanguage.googleapis.com).")
 	fs.StringVar(&cfg.GeminiAPIVersion, "gemini-api-version", cfg.GeminiAPIVersion, "Gemini: REST API version (default: v1beta).")
 	fs.Var(&cfg.GeminiStream, "gemini-stream", "Gemini: stream mode (true/false). Default is true.")
-	fs.Var(&cfg.GeminiTopK, "gemini-top-k", "Gemini: generationConfig.topK.")
-	fs.StringVar(&cfg.GeminiStop, "gemini-stop", cfg.GeminiStop, "Gemini: generationConfig.stopSequences (comma-separated).")
-	fs.Var(&cfg.GeminiCandidateCount, "gemini-candidate-count", "Gemini: generationConfig.candidateCount.")
-	fs.StringVar(&cfg.GeminiResponseMIMEType, "gemini-response-mime-type", cfg.GeminiResponseMIMEType, "Gemini: generationConfig.responseMimeType (e.g. application/json).")
 
-	// Mistral-only.
-	fs.StringVar(&cfg.MistralBaseURL, "mistral-base-url", cfg.MistralBaseURL, "Mistral: base URL (overrides MISTRAL_BASE_URL). Example: https://api.mistral.ai")
+	fs.StringVar(&cfg.MistralBaseURL, "mistral-base-url", cfg.MistralBaseURL, "Mistral: base URL (overrides MISTRAL_BASE_URL).")
 	fs.Var(&cfg.MistralStream, "mistral-stream", "Mistral: stream mode (true/false). Default is true.")
-	fs.Var(&cfg.MistralSafePrompt, "mistral-safe-prompt", "Mistral: safe_prompt (boolean).")
-	fs.Var(&cfg.MistralRandomSeed, "mistral-random-seed", "Mistral: random_seed (int).")
-	fs.StringVar(&cfg.MistralPromptMode, "mistral-prompt-mode", cfg.MistralPromptMode, "Mistral: prompt_mode (e.g. reasoning).")
-	fs.Var(&cfg.MistralParallelToolCalls, "mistral-parallel-tool-calls", "Mistral: parallel_tool_calls (boolean).")
-	fs.Var(&cfg.MistralFrequencyPenalty, "mistral-frequency-penalty", "Mistral: frequency_penalty (float).")
-	fs.Var(&cfg.MistralPresencePenalty, "mistral-presence-penalty", "Mistral: presence_penalty (float).")
-	fs.StringVar(&cfg.MistralStop, "mistral-stop", cfg.MistralStop, "Mistral: stop sequences (comma-separated).")
-	fs.Var(&cfg.MistralN, "mistral-n", "Mistral: number of completions to generate (n). Note: CLI renders only the first choice.")
-	fs.StringVar(&cfg.MistralResponseFormat, "mistral-response-format", cfg.MistralResponseFormat, "Mistral: response_format type (text|json_object). For JSON schema, use --json-schema.")
 
-	// Ollama-only.
 	fs.StringVar(&cfg.OllamaHost, "ollama-host", cfg.OllamaHost, "Ollama: base URL (overrides OLLAMA_HOST). Example: http://localhost:11434")
 	fs.StringVar(&cfg.OllamaEndpoint, "ollama-endpoint", cfg.OllamaEndpoint, "Ollama: endpoint chat|generate (default: chat).")
-	fs.StringVar(&cfg.OllamaKeepAlive, "ollama-keep-alive", cfg.OllamaKeepAlive, "Ollama: keep_alive (e.g. 5m) or 0 to unload immediately.")
-	fs.Var(&cfg.OllamaThink, "ollama-think", "Ollama: enable/disable thinking for thinking-capable models.")
 	fs.Var(&cfg.OllamaStream, "ollama-stream", "Ollama: stream mode (true/false). Default is true.")
-	fs.StringVar(&cfg.OllamaFormat, "ollama-format", cfg.OllamaFormat, "Ollama: format (e.g. json). For JSON schema, use --json-schema.")
-	fs.Var(&cfg.OllamaTopK, "ollama-top-k", "Ollama: options.top_k.")
-	fs.Var(&cfg.OllamaNumCtx, "ollama-num-ctx", "Ollama: options.num_ctx.")
-	fs.Var(&cfg.OllamaSeed, "ollama-seed", "Ollama: options.seed.")
-	fs.StringVar(&cfg.OllamaStop, "ollama-stop", cfg.OllamaStop, "Ollama: options.stop (comma-separated).")
-	fs.Var(&cfg.OllamaRaw, "ollama-raw", "Ollama: /api/generate raw mode (disables template/system processing).")
-	fs.Var(&cfg.OllamaExtraOpt, "ollama-option", "Ollama: arbitrary option key=value (repeatable). Values can be JSON, bool, int, float, or string.")
 
 	if err := fs.Parse(args); err != nil {
-		// flag returns errors like "flag provided but not defined: -x".
 		return cfg, err
 	}
 
-	// Sanitize some defaults.
+	// Sanitize.
 	cfg.Provider = strings.TrimSpace(cfg.Provider)
 	cfg.Model = strings.TrimSpace(cfg.Model)
-	cfg.PromptTemplatePath = strings.TrimSpace(cfg.PromptTemplatePath)
+
 	cfg.Message = strings.TrimSpace(cfg.Message)
-	cfg.FileMessagePath = strings.TrimSpace(cfg.FileMessagePath)
-	cfg.FileEncoding = strings.TrimSpace(cfg.FileEncoding)
+	cfg.Object = strings.TrimSpace(cfg.Object)
+	cfg.ObjectFile = strings.TrimSpace(cfg.ObjectFile)
+	cfg.Template = strings.TrimSpace(cfg.Template)
+	cfg.TemplateFile = strings.TrimSpace(cfg.TemplateFile)
+	cfg.TemplateSchema = strings.TrimSpace(cfg.TemplateSchema)
+	cfg.OutputSchema = strings.TrimSpace(cfg.OutputSchema)
+
+	cfg.ExitCommands = strings.TrimSpace(cfg.ExitCommands)
 	cfg.AggregateType = strings.TrimSpace(cfg.AggregateType)
 	cfg.Role = strings.TrimSpace(cfg.Role)
 	cfg.Instructions = strings.TrimSpace(cfg.Instructions)
-	cfg.ExitCommands = strings.TrimSpace(cfg.ExitCommands)
-
-	cfg.OpenAIServiceTier = strings.TrimSpace(cfg.OpenAIServiceTier)
-	cfg.OpenAITruncation = strings.TrimSpace(cfg.OpenAITruncation)
-	cfg.OpenAIPromptCacheKey = strings.TrimSpace(cfg.OpenAIPromptCacheKey)
-	cfg.OpenAIPromptCacheRetention = strings.TrimSpace(cfg.OpenAIPromptCacheRetention)
-	cfg.OpenAISafetyIdentifier = strings.TrimSpace(cfg.OpenAISafetyIdentifier)
-	cfg.OpenAIInclude = strings.TrimSpace(cfg.OpenAIInclude)
 
 	cfg.ClaudeBaseURL = strings.TrimSpace(cfg.ClaudeBaseURL)
 	cfg.ClaudeAPIVersion = strings.TrimSpace(cfg.ClaudeAPIVersion)
-	cfg.ClaudeStop = strings.TrimSpace(cfg.ClaudeStop)
 
 	cfg.GeminiBaseURL = strings.TrimSpace(cfg.GeminiBaseURL)
 	cfg.GeminiAPIVersion = strings.TrimSpace(cfg.GeminiAPIVersion)
-	cfg.GeminiStop = strings.TrimSpace(cfg.GeminiStop)
-	cfg.GeminiResponseMIMEType = strings.TrimSpace(cfg.GeminiResponseMIMEType)
 
 	cfg.MistralBaseURL = strings.TrimSpace(cfg.MistralBaseURL)
-	cfg.MistralPromptMode = strings.TrimSpace(cfg.MistralPromptMode)
-	cfg.MistralStop = strings.TrimSpace(cfg.MistralStop)
-	cfg.MistralResponseFormat = strings.TrimSpace(cfg.MistralResponseFormat)
 
 	cfg.OllamaHost = strings.TrimSpace(cfg.OllamaHost)
 	cfg.OllamaEndpoint = strings.TrimSpace(cfg.OllamaEndpoint)
-	cfg.OllamaKeepAlive = strings.TrimSpace(cfg.OllamaKeepAlive)
-	cfg.OllamaFormat = strings.TrimSpace(cfg.OllamaFormat)
-	cfg.OllamaStop = strings.TrimSpace(cfg.OllamaStop)
 
-	// If the user didn't pass --json-schema-strict but did pass --json-schema,
-	// keep strict=true by default.
-	if strings.TrimSpace(cfg.JSONSchemaPath) != "" && !cfg.JSONSchemaStrict.set {
-		cfg.JSONSchemaStrict.set = true
-		cfg.JSONSchemaStrict.val = true
+	// Basic validation for mutually exclusive flags.
+	if cfg.Template != "" && cfg.TemplateFile != "" {
+		return cfg, fmt.Errorf("use either --template or --template-file (not both)")
+	}
+	if cfg.Object != "" && cfg.ObjectFile != "" {
+		return cfg, fmt.Errorf("use either --object or --object-file (not both)")
 	}
 
 	return cfg, nil
 }
 
 func printUsage(w io.Writer) {
-	// Keep the help self-contained and copy/paste friendly.
-	fmt.Fprintln(w, "textualai - streaming CLI chat for OpenAI, Claude, Gemini, Mistral, or Ollama")
+	fmt.Fprintln(w, "textualai - streaming CLI for OpenAI, Claude, Gemini, Mistral, and Ollama")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  textualai help")
-	fmt.Fprintln(w, "  textualai --model <model> [--message <text> | --file-message <path>] [flags]")
-	fmt.Fprintln(w, "  textualai --model <model> --loop [flags]")
+	fmt.Fprintln(w, "  textualai --model <provider:model> [--message <text> | --object <json> | --object-file <path>] [flags]")
+	fmt.Fprintln(w, "  textualai --model <provider:model> --loop [flags]")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Provider selection:")
-	fmt.Fprintln(w, "  - Recommended: prefix the model with 'openai:', 'claude:', 'gemini:', 'mistral:', or 'ollama:'.")
-	fmt.Fprintln(w, "    Examples: openai:gpt-4.1, claude:claude-3-5-sonnet-latest, gemini:gemini-2.5-flash, mistral:mistral-small-latest, ollama:llama3.1")
-	fmt.Fprintln(w, "  - Alternatively set --provider openai|claude|gemini|mistral|ollama.")
-	fmt.Fprintln(w, "  - Or rely on --provider auto (default) which uses heuristics.")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Environment:")
-	fmt.Fprintln(w, "  OPENAI_API_KEY         OpenAI API key (required for OpenAI provider).")
-	fmt.Fprintln(w, "  ANTHROPIC_API_KEY      Claude/Anthropic API key (required for Claude provider).")
-	fmt.Fprintln(w, "  ANTHROPIC_BASE_URL     Claude/Anthropic base URL (optional, default https://api.anthropic.com).")
-	fmt.Fprintln(w, "  ANTHROPIC_VERSION      Claude/Anthropic API version header (optional, default 2023-06-01).")
-	fmt.Fprintln(w, "  GEMINI_API_KEY         Gemini API key (required for Gemini provider).")
-	fmt.Fprintln(w, "  MISTRAL_API_KEY        Mistral API key (required for Mistral provider).")
-	fmt.Fprintln(w, "  MISTRAL_BASE_URL       Mistral base URL (optional, default https://api.mistral.ai).")
-	fmt.Fprintln(w, "  OLLAMA_HOST            Ollama host (optional, default http://localhost:11434).")
-	fmt.Fprintln(w, "  TEXTUALAI_PROVIDER     Default provider (optional): auto|openai|claude|gemini|mistral|ollama.")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Core flags:")
+	fmt.Fprintln(w, "Core:")
 	fmt.Fprintln(w, "  --model <name>                 Model name. Prefix with openai:, claude:, gemini:, mistral:, or ollama: to force provider.")
 	fmt.Fprintln(w, "  --provider <auto|openai|claude|gemini|mistral|ollama> Provider selection (default: auto).")
-	fmt.Fprintln(w, "  --prompt-template <path>       Go text/template file. Must contain {{.Input}}. Default: identity template.")
-	fmt.Fprintln(w, "  --message <text>               Send a single message.")
-	fmt.Fprintln(w, "  --file-message <path|->        Read message from file (or stdin when path is '-').")
-	fmt.Fprintln(w, "  --file-encoding <name>         Encoding for --file-message (default UTF-8). See textual.ParseEncoding supported names.")
-	fmt.Fprintln(w, "  --loop                         Interactive loop (read messages from stdin).")
-	fmt.Fprintln(w, "  --exit-commands <csv>          Exit commands in loop mode (default exit,quit,/exit,/quit).")
-	fmt.Fprintln(w, "  --aggregate <word|line>        Streaming aggregation (default word).")
+	fmt.Fprintln(w, "  --message <text>               Raw message string (one-shot).")
+	fmt.Fprintln(w, "  --object <json>                JSON value as a string (one-shot).")
+	fmt.Fprintln(w, "  --object-file <path|->         JSON value from file, or stdin when path is '-'.")
+	fmt.Fprintln(w, "  --template <tmpl>              Go text/template string; input value is {{.}}.")
+	fmt.Fprintln(w, "  --template-file <path>         Go text/template file; input value is {{.}}.")
+	fmt.Fprintln(w, "  --template-schema <path>       JSON Schema to validate input before templating.")
+	fmt.Fprintln(w, "  --output-schema <path>         JSON Schema to request & validate structured output.")
 	fmt.Fprintln(w, "  --instructions <text>          System/developer instructions.")
+	fmt.Fprintln(w, "  --aggregate <word|line>        Streaming aggregation (default: word).")
 	fmt.Fprintln(w, "  --temperature <float>          Sampling temperature.")
 	fmt.Fprintln(w, "  --top-p <float>                Nucleus sampling parameter.")
 	fmt.Fprintln(w, "  --max-tokens <int>             Max output tokens.")
 	fmt.Fprintln(w, "  --timeout <duration>           Per-request timeout (e.g. 30s, 2m).")
-	fmt.Fprintln(w, "  --json-schema <path>           JSON Schema file (Structured Outputs).")
-	fmt.Fprintln(w, "  --json-schema-name <name>      OpenAI/Mistral/Claude schema wrapper/tool name (default: response).")
-	fmt.Fprintln(w, "  --json-schema-strict[=bool]    OpenAI/Mistral strict schema enforcement (default true when --json-schema is set).")
+	fmt.Fprintln(w, "  --loop                         Interactive loop mode.")
+	fmt.Fprintln(w, "  --exit-commands <csv>          Exit commands for loop mode.")
 	fmt.Fprintln(w, "  --verbose                      Print diagnostics to stderr.")
 	fmt.Fprintln(w, "  --version                      Print version.")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "OpenAI-only flags:")
-	fmt.Fprintln(w, "  --openai-service-tier <tier>           auto|default|flex|priority")
-	fmt.Fprintln(w, "  --openai-truncation <strategy>         auto|disabled")
-	fmt.Fprintln(w, "  --openai-store[=bool]                 Store responses server-side (default false when set).")
-	fmt.Fprintln(w, "  --openai-prompt-cache-key <key>        prompt_cache_key")
-	fmt.Fprintln(w, "  --openai-prompt-cache-retention <dur>  prompt_cache_retention (e.g. 24h)")
-	fmt.Fprintln(w, "  --openai-safety-identifier <id>        safety_identifier")
-	fmt.Fprintln(w, "  --openai-metadata key=value            metadata (repeatable)")
-	fmt.Fprintln(w, "  --openai-include <csv>                 include fields (comma-separated)")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Claude-only flags:")
-	fmt.Fprintln(w, "  --claude-base-url <url>         Base URL (overrides ANTHROPIC_BASE_URL). Default https://api.anthropic.com")
-	fmt.Fprintln(w, "  --claude-api-version <v>        anthropic-version header (overrides ANTHROPIC_VERSION). Default 2023-06-01")
-	fmt.Fprintln(w, "  --claude-stream[=bool]          Enable/disable streaming (default true).")
-	fmt.Fprintln(w, "  --claude-top-k <int>            top_k")
-	fmt.Fprintln(w, "  --claude-stop <csv>             stop_sequences (comma-separated).")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Gemini-only flags:")
-	fmt.Fprintln(w, "  --gemini-base-url <url>         Base URL (default https://generativelanguage.googleapis.com).")
-	fmt.Fprintln(w, "  --gemini-api-version <v>        REST API version (default v1beta).")
-	fmt.Fprintln(w, "  --gemini-stream[=bool]          Enable/disable streaming (default true).")
-	fmt.Fprintln(w, "  --gemini-top-k <int>            generationConfig.topK")
-	fmt.Fprintln(w, "  --gemini-stop <csv>             generationConfig.stopSequences (comma-separated).")
-	fmt.Fprintln(w, "  --gemini-candidate-count <int>  generationConfig.candidateCount")
-	fmt.Fprintln(w, "  --gemini-response-mime-type <t> generationConfig.responseMimeType (e.g. application/json)")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Mistral-only flags:")
-	fmt.Fprintln(w, "  --mistral-base-url <url>        Base URL (overrides MISTRAL_BASE_URL).")
-	fmt.Fprintln(w, "  --mistral-stream[=bool]         Enable/disable streaming (default true).")
-	fmt.Fprintln(w, "  --mistral-safe-prompt[=bool]    safe_prompt (model-dependent).")
-	fmt.Fprintln(w, "  --mistral-random-seed <int>     random_seed.")
-	fmt.Fprintln(w, "  --mistral-prompt-mode <mode>    prompt_mode (e.g. reasoning).")
-	fmt.Fprintln(w, "  --mistral-parallel-tool-calls[=bool] parallel_tool_calls.")
-	fmt.Fprintln(w, "  --mistral-frequency-penalty <float> frequency_penalty.")
-	fmt.Fprintln(w, "  --mistral-presence-penalty <float>  presence_penalty.")
-	fmt.Fprintln(w, "  --mistral-stop <csv>            stop sequences (comma-separated).")
-	fmt.Fprintln(w, "  --mistral-n <int>               number of completions (n); CLI renders first choice only.")
-	fmt.Fprintln(w, "  --mistral-response-format <type> response_format type (text|json_object). For schema, use --json-schema.")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Ollama-only flags:")
-	fmt.Fprintln(w, "  --ollama-host <url>            Base URL (overrides OLLAMA_HOST).")
-	fmt.Fprintln(w, "  --ollama-endpoint <chat|generate> Endpoint selection (default chat).")
-	fmt.Fprintln(w, "  --ollama-keep-alive <v>        keep_alive value (e.g. 5m or 0).")
-	fmt.Fprintln(w, "  --ollama-think[=bool]          Enable thinking (model-dependent).")
-	fmt.Fprintln(w, "  --ollama-stream[=bool]         Enable/disable streaming (default true).")
-	fmt.Fprintln(w, "  --ollama-format <json>         Request JSON output (Ollama format=\"json\").")
-	fmt.Fprintln(w, "  --ollama-top-k <int>           options.top_k")
-	fmt.Fprintln(w, "  --ollama-num-ctx <int>         options.num_ctx")
-	fmt.Fprintln(w, "  --ollama-seed <int>            options.seed")
-	fmt.Fprintln(w, "  --ollama-stop <csv>            options.stop (comma-separated)")
-	fmt.Fprintln(w, "  --ollama-raw[=bool]            /api/generate raw mode")
-	fmt.Fprintln(w, "  --ollama-option key=value      Arbitrary Ollama option (repeatable).")
-	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Examples:")
-	fmt.Fprintln(w, "  # OpenAI one-shot")
-	fmt.Fprintln(w, "  OPENAI_API_KEY=... textualai --model openai:gpt-4.1 --message \"Write a haiku about terminals\"")
+	fmt.Fprintln(w, "  # Raw message")
+	fmt.Fprintln(w, "  OPENAI_API_KEY=... textualai --model openai:gpt-4.1 --message \"Hello\"")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  # Claude one-shot")
-	fmt.Fprintln(w, "  ANTHROPIC_API_KEY=... textualai --model claude:claude-3-5-sonnet-latest --message \"Write a haiku about terminals\"")
+	fmt.Fprintln(w, "  # JSON + template")
+	fmt.Fprintln(w, "  textualai --model mistral:mistral-small-latest --object '{\"name\":\"Ada\"}' --template 'Hello {{.name}}'")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  # Gemini one-shot")
-	fmt.Fprintln(w, "  GEMINI_API_KEY=... textualai --model gemini:gemini-2.5-flash --message \"Write a haiku about terminals\"")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  # Mistral one-shot")
-	fmt.Fprintln(w, "  MISTRAL_API_KEY=... textualai --model mistral:mistral-small-latest --message \"Write a haiku about terminals\"")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  # Ollama one-shot (defaults to http://localhost:11434)")
-	fmt.Fprintln(w, "  textualai --model ollama:llama3.1 --message \"Explain monads\"")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  # Loop mode")
-	fmt.Fprintln(w, "  textualai --model ollama:llama3.1 --loop")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  # Template file")
-	fmt.Fprintln(w, "  textualai --model openai:gpt-4.1 --prompt-template ./prompt.tmpl --message \"Hello\"")
-}
-
-func loadPromptTemplate(path string) (string, error) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return defaultPromptTemplate, nil
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("read prompt template %q: %w", path, err)
-	}
-	s := strings.TrimSpace(string(b))
-	if s == "" {
-		return "", fmt.Errorf("prompt template %q is empty", path)
-	}
-	return s, nil
-}
-
-func readMessageFile(path string, encodingName string, stdin io.Reader) (string, error) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return "", nil
-	}
-
-	if stdin == nil {
-		stdin = os.Stdin
-	}
-
-	encodingName = strings.TrimSpace(encodingName)
-	if encodingName == "" {
-		encodingName = "UTF-8"
-	}
-
-	encID, err := textual.ParseEncoding(encodingName)
-	if err != nil {
-		return "", fmt.Errorf("invalid --file-encoding %q: %w", encodingName, err)
-	}
-
-	var r io.Reader
-	if path == "-" {
-		r = stdin
-	} else {
-		f, err := os.Open(path)
-		if err != nil {
-			return "", fmt.Errorf("open message file %q: %w", path, err)
-		}
-		defer f.Close()
-		r = f
-	}
-
-	utf8r, err := textual.NewUTF8Reader(r, encID)
-	if err != nil {
-		return "", fmt.Errorf("create UTF-8 reader: %w", err)
-	}
-	b, err := io.ReadAll(utf8r)
-	if err != nil {
-		return "", fmt.Errorf("read message: %w", err)
-	}
-	return strings.TrimSpace(string(b)), nil
-}
-
-func combineMessage(message string, fileMsg string) string {
-	message = strings.TrimSpace(message)
-	fileMsg = strings.TrimSpace(fileMsg)
-	switch {
-	case message == "" && fileMsg == "":
-		return ""
-	case message == "":
-		return fileMsg
-	case fileMsg == "":
-		return message
-	default:
-		// Keep the explicit --message first so CLI users can prepend a short
-		// instruction before the longer file content.
-		return strings.TrimSpace(message + "\n\n" + fileMsg)
-	}
+	fmt.Fprintln(w, "  # Structured output")
+	fmt.Fprintln(w, "  textualai --model openai:gpt-4.1 --output-schema ./schema.json --message \"Return JSON only.\"")
 }
 
 // ResolveProvider selects the provider and normalizes the model name.
-// It implements the default textualai provider selection semantics.
+// Prefix-based selection always wins.
 func ResolveProvider(providerFlag string, model string) (ProviderKind, string, error) {
 	model = strings.TrimSpace(model)
 	if model == "" {
 		return ProviderAuto, "", fmt.Errorf("model must not be empty")
 	}
 
-	// Prefix-based selection always wins.
 	lower := strings.ToLower(model)
 	switch {
 	case strings.HasPrefix(lower, "openai:"):
@@ -1324,7 +796,6 @@ func ResolveProvider(providerFlag string, model string) (ProviderKind, string, e
 		return ProviderOllama, strings.TrimSpace(model[len("ollama:"):]), nil
 	}
 
-	// Explicit provider flag.
 	switch strings.ToLower(strings.TrimSpace(providerFlag)) {
 	case "", "auto":
 		// fallthrough to heuristics below
@@ -1342,13 +813,7 @@ func ResolveProvider(providerFlag string, model string) (ProviderKind, string, e
 		return ProviderAuto, "", fmt.Errorf("unknown provider %q (expected auto|openai|claude|gemini|mistral|ollama)", providerFlag)
 	}
 
-	// Heuristics for auto mode.
-	// We keep this deliberately simple and deterministic:
-	//   - OpenAI: models starting with gpt* or o* (o1, o3, etc.)
-	//   - Claude: models starting with claude*
-	//   - Gemini: models starting with gemini*
-	//   - Mistral: models starting with mistral*, codestral*, ministral*, devstral*, magistral*
-	//   - Ollama: everything else
+	// Simple heuristics for auto mode.
 	if strings.HasPrefix(lower, "gpt") || strings.HasPrefix(lower, "o") {
 		return ProviderOpenAI, model, nil
 	}
@@ -1368,43 +833,294 @@ func ResolveProvider(providerFlag string, model string) (ProviderKind, string, e
 	return ProviderOllama, model, nil
 }
 
-func loadJSONSchema(path string) (map[string]any, error) {
+// ------------------------------
+// Input loading + prompt rendering
+// ------------------------------
+
+func loadOneShotInput(cfg Config, stdin io.Reader) (any, error) {
+	// One-shot: select exactly one input source.
+	if strings.TrimSpace(cfg.Message) != "" {
+		// Raw string input.
+		if cfg.Object != "" || cfg.ObjectFile != "" {
+			return nil, fmt.Errorf("use --message OR --object/--object-file (not both)")
+		}
+		return cfg.Message, nil
+	}
+
+	if cfg.Object != "" {
+		v, err := parseJSONAny(cfg.Object)
+		if err != nil {
+			return nil, fmt.Errorf("parse --object: %w", err)
+		}
+		return v, nil
+	}
+	if cfg.ObjectFile != "" {
+		raw, err := readFileOrStdin(cfg.ObjectFile, stdin)
+		if err != nil {
+			return nil, fmt.Errorf("read --object-file: %w", err)
+		}
+		v, err := parseJSONAny(raw)
+		if err != nil {
+			return nil, fmt.Errorf("parse --object-file JSON: %w", err)
+		}
+		return v, nil
+	}
+
+	return nil, nil
+}
+
+type renderer func(input any) (string, error)
+
+func prepareRenderer(cfg Config, stdin io.Reader) (renderer, error) {
+	// No template: identity for string inputs only.
+	if cfg.Template == "" && cfg.TemplateFile == "" {
+		return func(input any) (string, error) {
+			switch v := input.(type) {
+			case string:
+				return strings.TrimSpace(v), nil
+			default:
+				return "", errors.New("non-string JSON input requires --template or --template-file")
+			}
+		}, nil
+	}
+
+	// Load template text.
+	var tmplText string
+	if cfg.TemplateFile != "" {
+		b, err := readFileOrStdin(cfg.TemplateFile, stdin)
+		if err != nil {
+			return nil, fmt.Errorf("read template file: %w", err)
+		}
+		tmplText = b
+	} else {
+		tmplText = cfg.Template
+	}
+
+	tmplText = strings.TrimSpace(tmplText)
+	if tmplText == "" {
+		return nil, fmt.Errorf("template is empty")
+	}
+
+	// Parse template once and reuse.
+	tmpl, err := template.New("textualai.template").Parse(tmplText)
+	if err != nil {
+		return nil, fmt.Errorf("parse template: %w", err)
+	}
+
+	return func(input any) (string, error) {
+		var buf bytes.Buffer
+		if err := tmpl.Execute(&buf, input); err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(buf.String()), nil
+	}, nil
+}
+
+func readFileOrStdin(path string, stdin io.Reader) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", nil
+	}
+	if stdin == nil {
+		stdin = os.Stdin
+	}
+	var r io.Reader
+	if path == "-" {
+		r = stdin
+	} else {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
+	}
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func parseJSONAny(s string) (any, error) {
+	dec := json.NewDecoder(strings.NewReader(s))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return nil, err
+	}
+	// Ensure no trailing tokens.
+	if dec.More() {
+		return nil, fmt.Errorf("trailing JSON tokens")
+	}
+	// Try reading one more token.
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("trailing JSON value")
+		}
+		return nil, err
+	}
+	return v, nil
+}
+
+// ------------------------------
+// Schema loading / validation
+// ------------------------------
+
+// CompiledSchema holds a JSON Schema in two forms:
+//   - SchemaMap: for passing into provider request options
+//   - Resolved: for local validation via Resolved.Validate
+type CompiledSchema struct {
+	Path      string
+	SchemaMap map[string]any
+	Resolved  *jsonschema.Resolved
+}
+
+// loadCompiledSchema reads a JSON schema file (or stdin when path is "-"),
+// parses it into map form (for provider requests) and into jsonschema.Schema,
+// resolves refs, and returns a CompiledSchema.
+//
+// For schema files on disk, it sets ResolveOptions.BaseURI to an absolute file:// URI
+// so that relative $ref paths can be resolved.
+func loadCompiledSchema(path string, stdin io.Reader) (*CompiledSchema, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return nil, nil
 	}
-	b, err := os.ReadFile(path)
+
+	raw, err := readFileOrStdin(path, stdin)
 	if err != nil {
-		return nil, fmt.Errorf("read json schema %q: %w", path, err)
+		return nil, err
 	}
-	var schema map[string]any
-	if err := json.Unmarshal(b, &schema); err != nil {
-		return nil, fmt.Errorf("parse json schema %q: %w", path, err)
+
+	// Provider schema map.
+	var schemaMap map[string]any
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&schemaMap); err != nil {
+		return nil, fmt.Errorf("parse schema JSON: %w", err)
 	}
-	if len(schema) == 0 {
-		return nil, fmt.Errorf("json schema %q is empty", path)
+	if len(schemaMap) == 0 {
+		return nil, fmt.Errorf("schema is empty")
 	}
-	return schema, nil
+
+	// jsonschema.Schema for compilation/validation.
+	var s jsonschema.Schema
+	dec2 := json.NewDecoder(strings.NewReader(raw))
+	dec2.UseNumber()
+	if err := dec2.Decode(&s); err != nil {
+		return nil, fmt.Errorf("parse schema (typed): %w", err)
+	}
+
+	// Resolve.
+	opts := &jsonschema.ResolveOptions{
+		ValidateDefaults: true,
+	}
+	if path != "-" {
+		baseURI, baseDir, err := fileURIAndDir(path)
+		if err != nil {
+			return nil, err
+		}
+		opts.BaseURI = baseURI
+		opts.Loader = fileSchemaLoader(baseDir, stdin)
+	}
+
+	resolved, err := s.Resolve(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	return &CompiledSchema{
+		Path:      path,
+		SchemaMap: schemaMap,
+		Resolved:  resolved,
+	}, nil
 }
 
-// DefaultOpenAIBuilder builds the default OpenAI processor using cfg.
+func fileURIAndDir(path string) (baseURI string, baseDir string, err error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", "", fmt.Errorf("abs path %q: %w", path, err)
+	}
+	u := url.URL{Scheme: "file", Path: abs}
+	return u.String(), filepath.Dir(abs), nil
+}
+
+// fileSchemaLoader loads schemas for remote references (anything not under the
+// root schema). In practice, this supports file:// URIs (and bare/relative
+// paths as a fallback).
 //
-// It preserves the behavior of the historic package main CLI.
+// If you want to allow http(s) refs, implement a different Loader (or wrap this
+// one) and pass it into Schema.Resolve.
+func fileSchemaLoader(baseDir string, stdin io.Reader) jsonschema.Loader {
+	return func(uri *url.URL) (*jsonschema.Schema, error) {
+		if uri == nil {
+			return nil, fmt.Errorf("nil schema URI")
+		}
+
+		// Ignore fragments when reading the file; fragment resolution is handled
+		// by the jsonschema resolver.
+		u := *uri
+		u.Fragment = ""
+
+		switch u.Scheme {
+		case "", "file":
+			p := u.Path
+			// Fallback: if we got a relative path with an empty scheme, treat it as file under baseDir.
+			if p == "" {
+				p = u.String()
+			}
+			if p == "" {
+				return nil, fmt.Errorf("empty schema path for URI %q", uri.String())
+			}
+
+			// If it's not absolute (possible with empty scheme), anchor it to baseDir.
+			if !filepath.IsAbs(p) && strings.TrimSpace(baseDir) != "" {
+				p = filepath.Join(baseDir, p)
+			}
+
+			// Special case: allow "-" only when the URI explicitly says so (rare).
+			raw, err := readFileOrStdin(p, stdin)
+			if err != nil {
+				return nil, err
+			}
+
+			var s jsonschema.Schema
+			dec := json.NewDecoder(strings.NewReader(raw))
+			dec.UseNumber()
+			if err := dec.Decode(&s); err != nil {
+				return nil, fmt.Errorf("parse referenced schema %q: %w", uri.String(), err)
+			}
+			return &s, nil
+		default:
+			return nil, fmt.Errorf("unsupported schema URI scheme %q (uri=%q)", u.Scheme, uri.String())
+		}
+	}
+}
+
+func validateAgainstSchema(res *jsonschema.Resolved, v any) error {
+	if res == nil {
+		return nil
+	}
+	return res.Validate(v)
+}
+
+// ------------------------------
+// Provider builders
+// ------------------------------
+
 func DefaultOpenAIBuilder(
 	_ context.Context,
 	cfg Config,
 	model string,
 	templateStr string,
-	jsonSchema map[string]any,
+	outputSchema map[string]any,
 	getenv func(string) string,
-	stderr io.Writer,
+	_ io.Writer,
 ) (textual.Processor[textual.String], error) {
 	if getenv == nil {
 		getenv = os.Getenv
 	}
-
-	// OpenAI key check is performed again by the processor, but the CLI gives a
-	// more actionable error message.
 	if len(strings.TrimSpace(getenv("OPENAI_API_KEY"))) < 10 {
 		return nil, errors.New("missing or invalid OPENAI_API_KEY (required for OpenAI provider)")
 	}
@@ -1415,7 +1131,6 @@ func DefaultOpenAIBuilder(
 	}
 	proc := *procPtr
 
-	// Streaming aggregation.
 	switch strings.ToLower(cfg.AggregateType) {
 	case "line":
 		proc = proc.WithAggregateType(textualopenai.Line)
@@ -1424,7 +1139,7 @@ func DefaultOpenAIBuilder(
 	}
 
 	// Role.
-	if r := strings.ToLower(strings.TrimSpace(cfg.Role)); r != "" {
+	if r := strings.ToLower(cfg.Role); r != "" {
 		switch r {
 		case "user":
 			proc = proc.WithRole(textualopenai.RoleUser)
@@ -1434,13 +1149,11 @@ func DefaultOpenAIBuilder(
 			proc = proc.WithRole(textualopenai.RoleSystem)
 		case "developer":
 			proc = proc.WithRole(textualopenai.RoleDeveloper)
-		default:
-			fmt.Fprintf(stderr, "Warning: unsupported --role %q for OpenAI; using default\n", cfg.Role)
 		}
 	}
 
 	// Instructions.
-	if strings.TrimSpace(cfg.Instructions) != "" {
+	if cfg.Instructions != "" {
 		proc = proc.WithInstructions(cfg.Instructions)
 	}
 
@@ -1455,14 +1168,14 @@ func DefaultOpenAIBuilder(
 		proc = proc.WithMaxOutputTokens(cfg.MaxTokens.Value())
 	}
 
-	// Structured outputs / JSON schema.
-	if jsonSchema != nil {
-		strict := cfg.JSONSchemaStrict.Value()
+	// Structured output.
+	if outputSchema != nil {
+		strict := true
 		proc = proc.WithTextFormatJSONSchema(textualopenai.JSONSchemaFormat{
 			Type: "json_schema",
 			JSONSchema: textualopenai.JSONSchema{
-				Name:   strings.TrimSpace(cfg.JSONSchemaName),
-				Schema: jsonSchema,
+				Name:   "response",
+				Schema: outputSchema,
 				Strict: &strict,
 			},
 		})
@@ -1470,51 +1183,21 @@ func DefaultOpenAIBuilder(
 		proc = proc.WithTextFormatText()
 	}
 
-	// OpenAI-only: Service tier, truncation, store, caching, metadata, include...
-	if strings.TrimSpace(cfg.OpenAIServiceTier) != "" {
-		proc = proc.WithServiceTier(textualopenai.ServiceTier(cfg.OpenAIServiceTier))
-	}
-	if strings.TrimSpace(cfg.OpenAITruncation) != "" {
-		proc = proc.WithTruncation(textualopenai.TruncationStrategy(cfg.OpenAITruncation))
-	}
-	if cfg.OpenAIStore.IsSet() {
-		proc = proc.WithStore(cfg.OpenAIStore.Value())
-	}
-	if strings.TrimSpace(cfg.OpenAIPromptCacheKey) != "" {
-		proc = proc.WithPromptCacheKey(cfg.OpenAIPromptCacheKey)
-	}
-	if strings.TrimSpace(cfg.OpenAIPromptCacheRetention) != "" {
-		proc = proc.WithPromptCacheRetention(textualopenai.PromptCacheRetention(cfg.OpenAIPromptCacheRetention))
-	}
-	if strings.TrimSpace(cfg.OpenAISafetyIdentifier) != "" {
-		proc = proc.WithSafetyIdentifier(cfg.OpenAISafetyIdentifier)
-	}
-	if cfg.OpenAIMetadata != nil && len(cfg.OpenAIMetadata) > 0 {
-		proc = proc.WithMetadata(map[string]string(cfg.OpenAIMetadata))
-	}
-	if strings.TrimSpace(cfg.OpenAIInclude) != "" {
-		proc = proc.WithInclude(splitCSV(cfg.OpenAIInclude)...)
-	}
-
 	return proc, nil
 }
 
-// DefaultClaudeBuilder builds the default Claude / Anthropic processor using cfg.
 func DefaultClaudeBuilder(
 	_ context.Context,
 	cfg Config,
 	model string,
 	templateStr string,
-	jsonSchema map[string]any,
+	outputSchema map[string]any,
 	getenv func(string) string,
-	stderr io.Writer,
+	_ io.Writer,
 ) (textual.Processor[textual.String], error) {
 	if getenv == nil {
 		getenv = os.Getenv
 	}
-
-	// Claude key check is performed again by the processor, but the CLI gives a
-	// more actionable error message.
 	if len(strings.TrimSpace(getenv("ANTHROPIC_API_KEY"))) < 10 {
 		return nil, errors.New("missing or invalid ANTHROPIC_API_KEY (required for Claude provider)")
 	}
@@ -1525,7 +1208,6 @@ func DefaultClaudeBuilder(
 	}
 	proc := *procPtr
 
-	// Streaming aggregation.
 	switch strings.ToLower(cfg.AggregateType) {
 	case "line":
 		proc = proc.WithAggregateType(textualclaude.Line)
@@ -1533,40 +1215,33 @@ func DefaultClaudeBuilder(
 		proc = proc.WithAggregateType(textualclaude.Word)
 	}
 
-	// Role.
-	if r := strings.ToLower(strings.TrimSpace(cfg.Role)); r != "" {
+	// Role (Claude messages roles: user|assistant).
+	if r := strings.ToLower(cfg.Role); r != "" {
 		switch r {
 		case "user":
 			proc = proc.WithRole(textualclaude.RoleUser)
 		case "assistant":
 			proc = proc.WithRole(textualclaude.RoleAssistant)
-		case "system":
-			fmt.Fprintf(stderr, "Warning: unsupported --role %q for Claude; use --instructions for system prompts; using default\n", cfg.Role)
-		default:
-			fmt.Fprintf(stderr, "Warning: unsupported --role %q for Claude; using default\n", cfg.Role)
 		}
 	}
 
-	// Base URL override.
-	if strings.TrimSpace(cfg.ClaudeBaseURL) != "" {
+	// Overrides.
+	if cfg.ClaudeBaseURL != "" {
 		proc = proc.WithBaseURL(cfg.ClaudeBaseURL)
 	}
-	// API version override.
-	if strings.TrimSpace(cfg.ClaudeAPIVersion) != "" {
+	if cfg.ClaudeAPIVersion != "" {
 		proc = proc.WithAPIVersion(cfg.ClaudeAPIVersion)
 	}
-
-	// Instructions (system prompt).
-	if strings.TrimSpace(cfg.Instructions) != "" {
-		proc = proc.WithSystem(cfg.Instructions)
-	}
-
-	// Streaming toggle.
 	if cfg.ClaudeStream.IsSet() {
 		proc = proc.WithStream(cfg.ClaudeStream.Value())
 	}
 
-	// Sampling / common controls.
+	// Instructions (system prompt).
+	if cfg.Instructions != "" {
+		proc = proc.WithSystem(cfg.Instructions)
+	}
+
+	// Sampling.
 	if cfg.Temperature.IsSet() {
 		proc = proc.WithTemperature(cfg.Temperature.Value())
 	}
@@ -1577,26 +1252,13 @@ func DefaultClaudeBuilder(
 		proc = proc.WithMaxTokens(cfg.MaxTokens.Value())
 	}
 
-	// Claude-specific controls.
-	if cfg.ClaudeTopK.IsSet() {
-		proc = proc.WithTopK(cfg.ClaudeTopK.Value())
-	}
-	if strings.TrimSpace(cfg.ClaudeStop) != "" {
-		proc = proc.WithStopSequences(splitCSV(cfg.ClaudeStop)...)
-	}
-
-	// Structured outputs / JSON schema.
-	// Claude doesn't have a first-class JSON schema output field. A robust portable
-	// approach is to declare a JSON schema tool and force the model to call it.
-	if jsonSchema != nil {
-		toolName := strings.TrimSpace(cfg.JSONSchemaName)
-		if toolName == "" {
-			toolName = "response"
-		}
+	// Structured output via tool-use (portable approach).
+	if outputSchema != nil {
+		toolName := "response"
 		proc = proc.WithTools(textualclaude.Tool{
 			Name:        toolName,
 			Description: "Return a response that matches the provided JSON Schema.",
-			InputSchema: jsonSchema,
+			InputSchema: outputSchema,
 		})
 		proc = proc.WithToolChoice(textualclaude.ToolChoice{
 			Type: "tool",
@@ -1608,25 +1270,18 @@ func DefaultClaudeBuilder(
 	return proc, nil
 }
 
-// DefaultGeminiBuilder builds the default Gemini processor using cfg.
-//
-// It integrates the repository's Gemini ResponseProcessor (GenerateContent API)
-// while preserving the CLI's provider-agnostic behavior.
 func DefaultGeminiBuilder(
 	_ context.Context,
 	cfg Config,
 	model string,
 	templateStr string,
-	jsonSchema map[string]any,
+	outputSchema map[string]any,
 	getenv func(string) string,
-	stderr io.Writer,
+	_ io.Writer,
 ) (textual.Processor[textual.String], error) {
 	if getenv == nil {
 		getenv = os.Getenv
 	}
-
-	// Gemini key check is performed again by the processor, but the CLI gives a
-	// more actionable error message.
 	if len(strings.TrimSpace(getenv("GEMINI_API_KEY"))) < 10 {
 		return nil, errors.New("missing or invalid GEMINI_API_KEY (required for Gemini provider)")
 	}
@@ -1637,7 +1292,6 @@ func DefaultGeminiBuilder(
 	}
 	proc := *procPtr
 
-	// Streaming aggregation.
 	switch strings.ToLower(cfg.AggregateType) {
 	case "line":
 		proc = proc.WithAggregateType(textualgemini.Line)
@@ -1645,37 +1299,33 @@ func DefaultGeminiBuilder(
 		proc = proc.WithAggregateType(textualgemini.Word)
 	}
 
-	// Role (Gemini roles are "user" and "model").
-	if r := strings.ToLower(strings.TrimSpace(cfg.Role)); r != "" {
+	// Role (Gemini roles: user|model).
+	if r := strings.ToLower(cfg.Role); r != "" {
 		switch r {
 		case "user":
 			proc = proc.WithRole(textualgemini.RoleUser)
 		case "assistant", "model":
 			proc = proc.WithRole(textualgemini.RoleModel)
-		default:
-			fmt.Fprintf(stderr, "Warning: unsupported --role %q for Gemini; using default\n", cfg.Role)
 		}
 	}
 
-	// Base URL and API version overrides.
-	if strings.TrimSpace(cfg.GeminiBaseURL) != "" {
+	// Overrides.
+	if cfg.GeminiBaseURL != "" {
 		proc = proc.WithBaseURL(cfg.GeminiBaseURL)
 	}
-	if strings.TrimSpace(cfg.GeminiAPIVersion) != "" {
+	if cfg.GeminiAPIVersion != "" {
 		proc = proc.WithAPIVersion(cfg.GeminiAPIVersion)
 	}
-
-	// Instructions (systemInstruction).
-	if strings.TrimSpace(cfg.Instructions) != "" {
-		proc = proc.WithInstructions(cfg.Instructions)
-	}
-
-	// Streaming toggle.
 	if cfg.GeminiStream.IsSet() {
 		proc = proc.WithStream(cfg.GeminiStream.Value())
 	}
 
-	// Sampling / common controls.
+	// Instructions.
+	if cfg.Instructions != "" {
+		proc = proc.WithInstructions(cfg.Instructions)
+	}
+
+	// Sampling.
 	if cfg.Temperature.IsSet() {
 		proc = proc.WithTemperature(cfg.Temperature.Value())
 	}
@@ -1686,50 +1336,27 @@ func DefaultGeminiBuilder(
 		proc = proc.WithMaxOutputTokens(cfg.MaxTokens.Value())
 	}
 
-	// Gemini-specific generation config.
-	if cfg.GeminiTopK.IsSet() {
-		proc = proc.WithTopK(cfg.GeminiTopK.Value())
-	}
-	if cfg.GeminiCandidateCount.IsSet() {
-		proc = proc.WithCandidateCount(cfg.GeminiCandidateCount.Value())
-	}
-	if strings.TrimSpace(cfg.GeminiStop) != "" {
-		proc = proc.WithStopSequences(splitCSV(cfg.GeminiStop)...)
-	}
-	if strings.TrimSpace(cfg.GeminiResponseMIMEType) != "" {
-		proc = proc.WithResponseMIMEType(cfg.GeminiResponseMIMEType)
-	}
-
-	// Structured outputs / JSON schema (Gemini: responseMimeType + responseSchema).
-	if jsonSchema != nil {
-		// If the user didn't explicitly set a response MIME type, default to JSON for schema output.
-		if strings.TrimSpace(cfg.GeminiResponseMIMEType) == "" {
-			proc = proc.WithResponseMIMEType("application/json")
-		}
-		proc = proc.WithResponseJSONSchema(jsonSchema)
+	// Structured output.
+	if outputSchema != nil {
+		proc = proc.WithResponseMIMEType("application/json")
+		proc = proc.WithResponseJSONSchema(outputSchema)
 	}
 
 	return proc, nil
 }
 
-// DefaultMistralBuilder builds the default Mistral processor using cfg.
-//
-// It preserves the provider-agnostic CLI behavior while exposing Mistral-specific flags.
 func DefaultMistralBuilder(
 	_ context.Context,
 	cfg Config,
 	model string,
 	templateStr string,
-	jsonSchema map[string]any,
+	outputSchema map[string]any,
 	getenv func(string) string,
-	stderr io.Writer,
+	_ io.Writer,
 ) (textual.Processor[textual.String], error) {
 	if getenv == nil {
 		getenv = os.Getenv
 	}
-
-	// Mistral key check is performed again by the processor, but the CLI gives a
-	// more actionable error message.
 	if len(strings.TrimSpace(getenv("MISTRAL_API_KEY"))) < 10 {
 		return nil, errors.New("missing or invalid MISTRAL_API_KEY (required for Mistral provider)")
 	}
@@ -1740,7 +1367,6 @@ func DefaultMistralBuilder(
 	}
 	proc := *procPtr
 
-	// Streaming aggregation.
 	switch strings.ToLower(cfg.AggregateType) {
 	case "line":
 		proc = proc.WithAggregateType(textualmistral.Line)
@@ -1748,8 +1374,7 @@ func DefaultMistralBuilder(
 		proc = proc.WithAggregateType(textualmistral.Word)
 	}
 
-	// Role.
-	if r := strings.ToLower(strings.TrimSpace(cfg.Role)); r != "" {
+	if r := strings.ToLower(cfg.Role); r != "" {
 		switch r {
 		case "user":
 			proc = proc.WithRole(textualmistral.RoleUser)
@@ -1759,53 +1384,20 @@ func DefaultMistralBuilder(
 			proc = proc.WithRole(textualmistral.RoleSystem)
 		case "tool":
 			proc = proc.WithRole(textualmistral.RoleTool)
-		default:
-			fmt.Fprintf(stderr, "Warning: unsupported --role %q for Mistral; using default\n", cfg.Role)
 		}
 	}
 
-	// Base URL override.
-	if strings.TrimSpace(cfg.MistralBaseURL) != "" {
+	if cfg.MistralBaseURL != "" {
 		proc = proc.WithBaseURL(cfg.MistralBaseURL)
 	}
-
-	// Instructions (system prompt).
-	if strings.TrimSpace(cfg.Instructions) != "" {
-		proc = proc.WithInstructions(cfg.Instructions)
-	}
-
-	// Streaming toggle.
 	if cfg.MistralStream.IsSet() {
 		proc = proc.WithStream(cfg.MistralStream.Value())
 	}
 
-	// Mistral-specific controls.
-	if cfg.MistralSafePrompt.IsSet() {
-		proc = proc.WithSafePrompt(cfg.MistralSafePrompt.Value())
-	}
-	if cfg.MistralRandomSeed.IsSet() {
-		proc = proc.WithRandomSeed(cfg.MistralRandomSeed.Value())
-	}
-	if strings.TrimSpace(cfg.MistralPromptMode) != "" {
-		proc = proc.WithPromptMode(cfg.MistralPromptMode)
-	}
-	if cfg.MistralParallelToolCalls.IsSet() {
-		proc = proc.WithParallelToolCalls(cfg.MistralParallelToolCalls.Value())
-	}
-	if cfg.MistralFrequencyPenalty.IsSet() {
-		proc = proc.WithFrequencyPenalty(cfg.MistralFrequencyPenalty.Value())
-	}
-	if cfg.MistralPresencePenalty.IsSet() {
-		proc = proc.WithPresencePenalty(cfg.MistralPresencePenalty.Value())
-	}
-	if strings.TrimSpace(cfg.MistralStop) != "" {
-		proc = proc.WithStop(splitCSV(cfg.MistralStop)...)
-	}
-	if cfg.MistralN.IsSet() {
-		proc = proc.WithN(cfg.MistralN.Value())
+	if cfg.Instructions != "" {
+		proc = proc.WithInstructions(cfg.Instructions)
 	}
 
-	// Sampling / common controls.
 	if cfg.Temperature.IsSet() {
 		proc = proc.WithTemperature(cfg.Temperature.Value())
 	}
@@ -1816,40 +1408,29 @@ func DefaultMistralBuilder(
 		proc = proc.WithMaxTokens(cfg.MaxTokens.Value())
 	}
 
-	// Structured outputs / JSON schema.
-	//  1) JSON schema file wins
-	//  2) --mistral-response-format=json_object can request a JSON-only response
-	if jsonSchema != nil {
-		strict := cfg.JSONSchemaStrict.Value()
+	if outputSchema != nil {
+		strict := true
 		proc = proc.WithResponseFormatJSONSchema(textualmistral.JSONSchemaFormat{
 			Type: "json_schema",
 			JSONSchema: textualmistral.JSONSchema{
-				Name:   strings.TrimSpace(cfg.JSONSchemaName),
-				Schema: jsonSchema,
+				Name:   "response",
+				Schema: outputSchema,
 				Strict: &strict,
 			},
 		})
-	} else if strings.EqualFold(strings.TrimSpace(cfg.MistralResponseFormat), "json") ||
-		strings.EqualFold(strings.TrimSpace(cfg.MistralResponseFormat), "json_object") {
-		proc = proc.WithResponseFormatJSONObject()
-	} else if strings.EqualFold(strings.TrimSpace(cfg.MistralResponseFormat), "text") {
-		proc = proc.WithResponseFormatText()
 	}
 
 	return proc, nil
 }
 
-// DefaultOllamaBuilder builds the default Ollama processor using cfg.
-//
-// It preserves the behavior of the historic package main CLI.
 func DefaultOllamaBuilder(
 	_ context.Context,
 	cfg Config,
 	model string,
 	templateStr string,
-	jsonSchema map[string]any,
+	outputSchema map[string]any,
 	_ func(string) string,
-	stderr io.Writer,
+	_ io.Writer,
 ) (textual.Processor[textual.String], error) {
 	procPtr, err := textualollama.NewResponseProcessor[textual.String](model, templateStr)
 	if err != nil {
@@ -1857,7 +1438,6 @@ func DefaultOllamaBuilder(
 	}
 	proc := *procPtr
 
-	// Streaming aggregation.
 	switch strings.ToLower(cfg.AggregateType) {
 	case "line":
 		proc = proc.WithAggregateType(textualollama.Line)
@@ -1865,8 +1445,7 @@ func DefaultOllamaBuilder(
 		proc = proc.WithAggregateType(textualollama.Word)
 	}
 
-	// Role.
-	if r := strings.ToLower(strings.TrimSpace(cfg.Role)); r != "" {
+	if r := strings.ToLower(cfg.Role); r != "" {
 		switch r {
 		case "user":
 			proc = proc.WithRole(textualollama.RoleUser)
@@ -1874,48 +1453,30 @@ func DefaultOllamaBuilder(
 			proc = proc.WithRole(textualollama.RoleAssistant)
 		case "system":
 			proc = proc.WithRole(textualollama.RoleSystem)
-		default:
-			fmt.Fprintf(stderr, "Warning: unsupported --role %q for Ollama; using default\n", cfg.Role)
 		}
 	}
 
-	// Base URL override.
-	if strings.TrimSpace(cfg.OllamaHost) != "" {
+	if cfg.OllamaHost != "" {
 		proc = proc.WithBaseURL(cfg.OllamaHost)
 	}
 
-	// Endpoint.
-	switch strings.ToLower(strings.TrimSpace(cfg.OllamaEndpoint)) {
+	switch strings.ToLower(cfg.OllamaEndpoint) {
 	case "", "chat":
 		proc = proc.WithChatEndpoint()
 	case "generate":
 		proc = proc.WithGenerateEndpoint()
 	default:
-		fmt.Fprintf(stderr, "Warning: unknown --ollama-endpoint %q; using chat\n", cfg.OllamaEndpoint)
 		proc = proc.WithChatEndpoint()
 	}
 
-	// Instructions (system prompt).
-	if strings.TrimSpace(cfg.Instructions) != "" {
+	if cfg.Instructions != "" {
 		proc = proc.WithInstructions(cfg.Instructions)
 	}
 
-	// Streaming toggle (Ollama supports stream=false).
 	if cfg.OllamaStream.IsSet() {
 		proc = proc.WithStream(cfg.OllamaStream.Value())
 	}
 
-	// Keep alive.
-	if strings.TrimSpace(cfg.OllamaKeepAlive) != "" {
-		proc = proc.WithKeepAlive(parseKeepAlive(cfg.OllamaKeepAlive))
-	}
-
-	// Thinking.
-	if cfg.OllamaThink.IsSet() {
-		proc = proc.WithThink(cfg.OllamaThink.Value())
-	}
-
-	// Sampling / common controls.
 	if cfg.Temperature.IsSet() {
 		proc = proc.WithTemperature(cfg.Temperature.Value())
 	}
@@ -1926,44 +1487,16 @@ func DefaultOllamaBuilder(
 		proc = proc.WithNumPredict(cfg.MaxTokens.Value())
 	}
 
-	// Ollama model options.
-	if cfg.OllamaTopK.IsSet() {
-		proc = proc.WithTopK(cfg.OllamaTopK.Value())
-	}
-	if cfg.OllamaNumCtx.IsSet() {
-		proc = proc.WithNumCtx(cfg.OllamaNumCtx.Value())
-	}
-	if cfg.OllamaSeed.IsSet() {
-		proc = proc.WithSeed(cfg.OllamaSeed.Value())
-	}
-	if strings.TrimSpace(cfg.OllamaStop) != "" {
-		proc = proc.WithStop(splitCSV(cfg.OllamaStop)...)
-	}
-
-	// Raw mode is generate-only; we set it regardless and Ollama will ignore
-	// if using the chat endpoint.
-	if cfg.OllamaRaw.IsSet() {
-		proc = proc.WithRaw(cfg.OllamaRaw.Value())
-	}
-
-	// Extra options.
-	if cfg.OllamaExtraOpt != nil && len(cfg.OllamaExtraOpt) > 0 {
-		for k, v := range cfg.OllamaExtraOpt {
-			proc = proc.WithOption(k, v)
-		}
-	}
-
-	// Output formatting.
-	//  1) JSON schema file (Structured Outputs) wins
-	//  2) --ollama-format=json can request a plain JSON response
-	if jsonSchema != nil {
-		proc = proc.WithFormat(jsonSchema)
-	} else if strings.EqualFold(strings.TrimSpace(cfg.OllamaFormat), "json") {
-		proc = proc.WithFormatJSON()
+	if outputSchema != nil {
+		proc = proc.WithFormat(outputSchema)
 	}
 
 	return proc, nil
 }
+
+// ------------------------------
+// Streaming + loop
+// ------------------------------
 
 func withOptionalTimeout(parent context.Context, d OptDuration) (context.Context, context.CancelFunc) {
 	if !d.IsSet() || d.Value() <= 0 {
@@ -1975,27 +1508,24 @@ func withOptionalTimeout(parent context.Context, d OptDuration) (context.Context
 // DefaultStreamer runs one processor invocation and streams its output to outw.
 //
 // It expects the processor to emit aggregated "snapshots" and prints only the
-// delta between successive snapshots.
-//
-// It returns the final accumulated text.
+// delta between successive snapshots. It returns the final accumulated text.
 func DefaultStreamer(
 	ctx context.Context,
 	proc textual.Processor[textual.String],
-	message string,
+	prompt string,
 	outw *bufio.Writer,
 ) (string, error) {
 	if proc == nil {
 		return "", errors.New("nil processor")
 	}
 
-	message = strings.TrimSpace(message)
-	if message == "" {
-		return "", errors.New("empty message")
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return "", errors.New("empty prompt")
 	}
 
 	in := make(chan textual.String, 1)
-	// Use textual.String as a minimal carrier.
-	in <- textual.String{}.FromUTF8String(message).WithIndex(0)
+	in <- textual.String{}.FromUTF8String(prompt).WithIndex(0)
 	close(in)
 
 	out := proc.Apply(ctx, in)
@@ -2003,7 +1533,6 @@ func DefaultStreamer(
 	var last string
 	for item := range out {
 		if err := item.GetError(); err != nil {
-			// Processor errors are carried as data; surface them as an error.
 			return last, err
 		}
 		snapshot := item.UTF8String()
@@ -2023,19 +1552,23 @@ func DefaultStreamer(
 	return last, nil
 }
 
-type streamFn func(ctx context.Context, msg string) (string, error)
-
 func interactiveLoop(
 	rootCtx context.Context,
 	cfg Config,
-	fn streamFn,
-	initialMsg string,
+	proc textual.Processor[textual.String],
+	render renderer,
+	inputSchema *jsonschema.Resolved,
+	outputSchema *jsonschema.Resolved,
 	stdin io.Reader,
 	outw *bufio.Writer,
 	stderr io.Writer,
+	stream Streamer,
 ) int {
 	if stdin == nil {
 		stdin = os.Stdin
+	}
+	if stream == nil {
+		stream = DefaultStreamer
 	}
 
 	exitCmds := make(map[string]struct{})
@@ -2047,22 +1580,6 @@ func interactiveLoop(
 
 	inReader := bufio.NewReader(stdin)
 
-	// In loop mode we optionally run an initial message (from flags) before
-	// prompting the user.
-	if strings.TrimSpace(initialMsg) != "" {
-		ctx, cancel := withOptionalTimeout(rootCtx, cfg.Timeout)
-		_, err := fn(ctx, initialMsg)
-		cancel()
-		if err != nil {
-			fmt.Fprintln(stderr, "Error:", err)
-			fmt.Fprintln(outw)
-			outw.Flush()
-			return 1
-		}
-		fmt.Fprintln(outw)
-		outw.Flush()
-	}
-
 	for {
 		select {
 		case <-rootCtx.Done():
@@ -2073,14 +1590,13 @@ func interactiveLoop(
 
 		// Prompt.
 		fmt.Fprint(outw, "> ")
-		outw.Flush()
+		_ = outw.Flush()
 
 		line, err := inReader.ReadString('\n')
 		if err != nil {
-			// EOF => normal exit.
 			if errors.Is(err, io.EOF) {
 				fmt.Fprintln(outw)
-				outw.Flush()
+				_ = outw.Flush()
 				return 0
 			}
 			fmt.Fprintln(stderr, "Error reading stdin:", err)
@@ -2089,39 +1605,50 @@ func interactiveLoop(
 
 		msg := strings.TrimSpace(line)
 		if msg == "" {
-			// Empty line: ignore.
 			continue
 		}
-
 		if _, ok := exitCmds[strings.ToLower(msg)]; ok {
 			return 0
 		}
 
+		// Loop input is always a raw string. Apply optional input schema validation.
+		if inputSchema != nil {
+			if err := validateAgainstSchema(inputSchema, msg); err != nil {
+				fmt.Fprintln(stderr, "Error: input does not match --template-schema:", err)
+				continue
+			}
+		}
+
+		prompt, err := render(msg)
+		if err != nil {
+			fmt.Fprintln(stderr, "Error:", err)
+			continue
+		}
+
 		ctx, cancel := withOptionalTimeout(rootCtx, cfg.Timeout)
-		_, err = fn(ctx, msg)
+		final, err := stream(ctx, proc, prompt, outw)
 		cancel()
 		if err != nil {
 			fmt.Fprintln(stderr, "Error:", err)
 			fmt.Fprintln(outw)
-			outw.Flush()
-			// Keep looping after an error; this is a chat REPL, not a batch job.
+			_ = outw.Flush()
 			continue
 		}
 		fmt.Fprintln(outw)
-		outw.Flush()
-	}
-}
+		_ = outw.Flush()
 
-func parseKeepAlive(s string) any {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return nil
+		if outputSchema != nil {
+			v, err := parseJSONAny(final)
+			if err != nil {
+				fmt.Fprintln(stderr, "Error: output is not valid JSON:", err)
+				continue
+			}
+			if err := validateAgainstSchema(outputSchema, v); err != nil {
+				fmt.Fprintln(stderr, "Error: output does not match --output-schema:", err)
+				continue
+			}
+		}
 	}
-	// Ollama accepts 0 as a number (unload immediately).
-	if i, err := strconv.Atoi(s); err == nil {
-		return i
-	}
-	return s
 }
 
 func splitCSV(s string) []string {
@@ -2137,10 +1664,4 @@ func splitCSV(s string) []string {
 		}
 	}
 	return out
-}
-
-func init() {
-	// Make sure examples that use relative schema/template paths can show a
-	// helpful working directory in verbose mode if needed.
-	_, _ = filepath.Abs(".")
 }

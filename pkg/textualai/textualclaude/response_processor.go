@@ -141,12 +141,15 @@ type ResponseProcessor[S textual.Carrier[S]] struct {
 
 	// EmitToolUse controls whether tool_use blocks are surfaced as textual output.
 	//
-	// When enabled, the processor emits:
-	//   - tool_use input JSON deltas (streaming input_json_delta.partial_json)
-	//   - tool_use input JSON (non-streaming tool_use.input)
+	// When enabled, the processor emits ONLY the tool_use input JSON (as textual output)
+	// and suppresses normal text streaming. This is the most reliable way to implement
+	// schema-based structured outputs across providers: force a tool call whose
+	// input_schema matches the desired output schema, and then validate the tool input.
 	//
-	// This is useful to implement schema-based structured outputs by forcing a tool call
-	// whose input_schema matches the desired output schema.
+	// Streaming shape:
+	//   - tool_use input JSON deltas (input_json_delta.partial_json)
+	// Non-streaming shape:
+	//   - tool_use.input marshaled as JSON
 	EmitToolUse *bool `json:"-"`
 }
 
@@ -566,13 +569,12 @@ func (p ResponseProcessor[S]) handleNonStreaming(ctx context.Context, r io.Reade
 		return fmt.Errorf("decode response: %w", err)
 	}
 
-	text := extractText(res)
-	if text == "" {
-		// Optionally emit tool_use blocks (JSON string) for structured outputs.
-		if p.emitToolUseEnabled() {
-			toolJSON := extractToolUseInputJSON(res)
-			text = toolJSON
-		}
+	// In EmitToolUse mode we prefer the tool input JSON and ignore normal text.
+	var text string
+	if p.emitToolUseEnabled() {
+		text = extractToolUseInputJSON(res)
+	} else {
+		text = extractText(res)
 	}
 	if text == "" {
 		return nil
@@ -606,15 +608,106 @@ func (p ResponseProcessor[S]) handleStreamingSSE(ctx context.Context, r io.Reade
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, maxScanTokenSize)
 
-	aggText := newStreamAggregator(p.AggregateType)
-	aggTool := newStreamAggregator(p.AggregateType)
 	proto := *new(S)
 
-	emit := func(agg *streamAggregator, delta string) error {
+	// In EmitToolUse mode, emit ONLY tool JSON deltas.
+	if p.emitToolUseEnabled() {
+		aggTool := newStreamAggregator(p.AggregateType)
+
+		emitTool := func(delta string) error {
+			if delta == "" {
+				return nil
+			}
+			segments := aggTool.Append(delta)
+			for _, s := range segments {
+				item := proto.FromUTF8String(s)
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case out <- item:
+				}
+			}
+			return nil
+		}
+
+		for scanner.Scan() {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" {
+				continue
+			}
+			if !strings.HasPrefix(line, "data:") {
+				// Ignore SSE fields like "event:".
+				continue
+			}
+
+			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			if data == "" {
+				continue
+			}
+			// Some SSE implementations send [DONE]. Tolerate it.
+			if data == "[DONE]" {
+				break
+			}
+
+			var ev messagesStreamEvent
+			if err := json.Unmarshal([]byte(data), &ev); err != nil {
+				// Skip malformed events but keep streaming.
+				continue
+			}
+
+			// Error events.
+			if strings.EqualFold(strings.TrimSpace(ev.Type), "error") || strings.TrimSpace(ev.Error.Message) != "" {
+				msg := strings.TrimSpace(ev.Error.Message)
+				if msg == "" {
+					msg = data
+				}
+				return fmt.Errorf("claude stream error: %s", msg)
+			}
+
+			switch ev.Type {
+			case "message_stop":
+				goto flushTool
+			case "content_block_delta":
+				if ev.Delta.Type == "input_json_delta" {
+					if err := emitTool(ev.Delta.PartialJSON); err != nil {
+						return err
+					}
+				}
+			default:
+				continue
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			return fmt.Errorf("read stream: %w", err)
+		}
+
+	flushTool:
+		for _, s := range aggTool.Final() {
+			item := proto.FromUTF8String(s)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case out <- item:
+			}
+		}
+		return nil
+	}
+
+	// Default mode: emit normal text only.
+	aggText := newStreamAggregator(p.AggregateType)
+
+	emitText := func(delta string) error {
 		if delta == "" {
 			return nil
 		}
-		segments := agg.Append(delta)
+		segments := aggText.Append(delta)
 		for _, s := range segments {
 			item := proto.FromUTF8String(s)
 			select {
@@ -668,24 +761,14 @@ func (p ResponseProcessor[S]) handleStreamingSSE(ctx context.Context, r io.Reade
 
 		switch ev.Type {
 		case "message_stop":
-			goto flush
+			goto flushText
 		case "content_block_delta":
-			// text_delta emits text.
 			if ev.Delta.Type == "text_delta" {
-				if err := emit(aggText, ev.Delta.Text); err != nil {
+				if err := emitText(ev.Delta.Text); err != nil {
 					return err
 				}
-				continue
-			}
-			// tool_use input JSON stream.
-			if p.emitToolUseEnabled() && ev.Delta.Type == "input_json_delta" {
-				if err := emit(aggTool, ev.Delta.PartialJSON); err != nil {
-					return err
-				}
-				continue
 			}
 		default:
-			// Ignore message_start/content_block_start/message_delta/content_block_stop/ping/etc.
 			continue
 		}
 	}
@@ -694,24 +777,13 @@ func (p ResponseProcessor[S]) handleStreamingSSE(ctx context.Context, r io.Reade
 		return fmt.Errorf("read stream: %w", err)
 	}
 
-flush:
-	// Flush any remaining partial text.
+flushText:
 	for _, s := range aggText.Final() {
 		item := proto.FromUTF8String(s)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case out <- item:
-		}
-	}
-	if p.emitToolUseEnabled() {
-		for _, s := range aggTool.Final() {
-			item := proto.FromUTF8String(s)
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case out <- item:
-			}
 		}
 	}
 

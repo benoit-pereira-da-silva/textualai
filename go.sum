@@ -1,2 +1,6 @@
 github.com/benoit-pereira-da-silva/textual v1.0.0 h1:/uOSSXJLdhN4TWeAdOKiRqgDBMguhJV7P8DSLXeGUp4=
 github.com/benoit-pereira-da-silva/textual v1.0.0/go.mod h1:fdSdk5i1ukUgWVNtr2bLY0zvhTyQogNgiVyi5t4b+aE=
+github.com/google/jsonschema-go v0.3.0 h1:6AH2TxVNtk3IlvkkhjrtbUc4S8AvO0Xii0DxIygDg+Q=
+github.com/google/jsonschema-go v0.3.0/go.mod h1:r5quNTdLOYEz95Ru18zA0ydNbBuYoo9tgaYcxEYhJVE=
+golang.org/x/text v0.32.0 h1:ZD01bjUt1FQ9WJ0ClOL5vxgxOI/sVCNgX1YtKwcY0mU=
+golang.org/x/text v0.32.0/go.mod h1:o/rUWzghvpD5TXrTIBuJU77MTaN0ljMWE47kxGJQ7jY=
