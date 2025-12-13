@@ -55,6 +55,7 @@ import (
 	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/textualmistral"
 	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/textualollama"
 	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/textualopenai"
+	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/textualshared"
 
 	"github.com/google/jsonschema-go/jsonschema"
 )
@@ -1210,9 +1211,9 @@ func DefaultClaudeBuilder(
 
 	switch strings.ToLower(cfg.AggregateType) {
 	case "line":
-		proc = proc.WithAggregateType(textualclaude.Line)
+		proc = proc.WithAggregateType(textualshared.Line)
 	default:
-		proc = proc.WithAggregateType(textualclaude.Word)
+		proc = proc.WithAggregateType(textualshared.Word)
 	}
 
 	// Role (Claude messages roles: user|assistant).

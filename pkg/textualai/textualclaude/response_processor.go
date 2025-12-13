@@ -26,9 +26,9 @@ import (
 	"os"
 	"strings"
 	"text/template"
-	"unicode"
 
 	"github.com/benoit-pereira-da-silva/textual/pkg/textual"
+	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/textualshared"
 )
 
 var apiKey = os.Getenv("ANTHROPIC_API_KEY")
@@ -37,25 +37,9 @@ var apiKey = os.Getenv("ANTHROPIC_API_KEY")
 // event naming conventions used elsewhere in the project.
 const TextualProcessorChatEvent = "claude.messages"
 
-// AggregateType controls how streamed chunks are turned into output carrier values.
-//
-//   - Word: emit when we cross a whitespace / punctuation boundary.
-//   - Line: emit when we cross a newline boundary.
-type AggregateType string
-
 const (
-	Word AggregateType = "word"
-	Line AggregateType = "line"
-)
-
-// Role is the message role used when ResponseProcessor builds a default
-// messages array.
-type Role string
-
-const (
-	RoleUser      Role = "user"
-	RoleAssistant Role = "assistant"
-	RoleSystem    Role = "system" // Not a Claude messages role; used only as a convenience label.
+	RoleUser      textualshared.Role = "user"
+	RoleAssistant textualshared.Role = "assistant"
 )
 
 // ResponseProcessor is a textual.Processor that calls Anthropic's Claude Messages API
@@ -95,10 +79,10 @@ type ResponseProcessor[S textual.Carrier[S]] struct {
 	Template template.Template `json:"template"`
 
 	// AggregateType controls how streamed content is chunked into outputs.
-	AggregateType AggregateType `json:"aggregateType"`
+	AggregateType textualshared.AggregateType `json:"aggregateType"`
 
 	// Role is used when the processor constructs a default message.
-	Role Role `json:"role,omitempty"`
+	Role textualshared.Role `json:"role,omitempty"`
 
 	// ---------------------------
 	// Messages API request body
@@ -236,7 +220,7 @@ func NewResponseProcessor[S textual.Carrier[S]](model, templateStr string) (*Res
 		APIVersion:    defaultAPIVersion(),
 		Model:         model,
 		Template:      *tmpl,
-		AggregateType: Word,
+		AggregateType: textualshared.Word,
 		Role:          RoleUser,
 		Stream:        &stream,
 		MaxTokens:     &maxTokens,
@@ -580,7 +564,7 @@ func (p ResponseProcessor[S]) handleNonStreaming(ctx context.Context, r io.Reade
 		return nil
 	}
 
-	agg := newStreamAggregator(p.AggregateType)
+	agg := textualshared.NewStreamAggregator(p.AggregateType)
 	segments := agg.Append(text)
 	segments = append(segments, agg.Final()...)
 
@@ -612,7 +596,7 @@ func (p ResponseProcessor[S]) handleStreamingSSE(ctx context.Context, r io.Reade
 
 	// In EmitToolUse mode, emit ONLY tool JSON deltas.
 	if p.emitToolUseEnabled() {
-		aggTool := newStreamAggregator(p.AggregateType)
+		aggTool := textualshared.NewStreamAggregator(p.AggregateType)
 
 		emitTool := func(delta string) error {
 			if delta == "" {
@@ -701,7 +685,7 @@ func (p ResponseProcessor[S]) handleStreamingSSE(ctx context.Context, r io.Reade
 	}
 
 	// Default mode: emit normal text only.
-	aggText := newStreamAggregator(p.AggregateType)
+	aggText := textualshared.NewStreamAggregator(p.AggregateType)
 
 	emitText := func(delta string) error {
 		if delta == "" {
@@ -839,13 +823,13 @@ func (p ResponseProcessor[S]) emitToolUseEnabled() bool {
 // -----------------------
 
 // WithAggregateType returns a copy with AggregateType updated.
-func (p ResponseProcessor[S]) WithAggregateType(t AggregateType) ResponseProcessor[S] {
+func (p ResponseProcessor[S]) WithAggregateType(t textualshared.AggregateType) ResponseProcessor[S] {
 	p.AggregateType = t
 	return p
 }
 
 // WithRole sets the role used when the processor constructs its default message.
-func (p ResponseProcessor[S]) WithRole(role Role) ResponseProcessor[S] {
+func (p ResponseProcessor[S]) WithRole(role textualshared.Role) ResponseProcessor[S] {
 	p.Role = role
 	return p
 }
@@ -954,87 +938,6 @@ func (p ResponseProcessor[S]) WithToolChoice(choice any) ResponseProcessor[S] {
 func (p ResponseProcessor[S]) WithEmitToolUse(v bool) ResponseProcessor[S] {
 	p.EmitToolUse = &v
 	return p
-}
-
-// --------------------------
-// Stream aggregation helpers
-// --------------------------
-
-type streamAggregator struct {
-	aggType     AggregateType
-	buffer      []rune
-	lastEmitPos int
-}
-
-func newStreamAggregator(aggType AggregateType) *streamAggregator {
-	if aggType != Word && aggType != Line {
-		aggType = Word
-	}
-	return &streamAggregator{
-		aggType:     aggType,
-		buffer:      make([]rune, 0),
-		lastEmitPos: 0,
-	}
-}
-
-func (a *streamAggregator) Append(chunk string) []string {
-	if chunk == "" {
-		return nil
-	}
-	a.buffer = append(a.buffer, []rune(chunk)...)
-
-	switch a.aggType {
-	case Word:
-		return a.collect(isWordBoundaryRune)
-	case Line:
-		return a.collect(func(r rune) bool { return r == '\n' })
-	default:
-		return a.collect(nil)
-	}
-}
-
-func (a *streamAggregator) Final() []string {
-	if len(a.buffer) == 0 || a.lastEmitPos >= len(a.buffer) {
-		return nil
-	}
-	a.lastEmitPos = len(a.buffer)
-	return []string{string(a.buffer)}
-}
-
-func (a *streamAggregator) collect(delim func(rune) bool) []string {
-	var out []string
-
-	if delim == nil {
-		if len(a.buffer) > a.lastEmitPos {
-			out = append(out, string(a.buffer))
-			a.lastEmitPos = len(a.buffer)
-		}
-		return out
-	}
-
-	for i := a.lastEmitPos; i < len(a.buffer); i++ {
-		if delim(a.buffer[i]) {
-			pos := i + 1
-			if pos <= a.lastEmitPos {
-				continue
-			}
-			out = append(out, string(a.buffer[:pos]))
-			a.lastEmitPos = pos
-		}
-	}
-	return out
-}
-
-func isWordBoundaryRune(r rune) bool {
-	if unicode.IsSpace(r) {
-		return true
-	}
-	switch r {
-	case '.', ',', ';', ':', '!', '?', '…', '»', '«':
-		return true
-	default:
-		return false
-	}
 }
 
 // --------------------------
