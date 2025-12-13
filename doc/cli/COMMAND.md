@@ -1,6 +1,6 @@
 # textualai
 
-`textualai` is a small **streaming** CLI chat tool that can talk to **OpenAI** (Responses API), **Gemini** (GenerateContent API), **Mistral** (Chat Completions API), or **Ollama** (local HTTP API) with the **same command**.
+`textualai` is a small **streaming** CLI chat tool that can talk to **OpenAI** (Responses API), **Claude / Anthropic** (Messages API), **Gemini** (GenerateContent API), **Mistral** (Chat Completions API), or **Ollama** (local HTTP API) with the **same command**.
 
 It is built on top of the `textual` pipeline abstractions used in this repository.
 
@@ -14,6 +14,7 @@ It is built on top of the `textual` pipeline abstractions used in this repositor
 - **Prompt templates** (`--prompt-template`) using Go `text/template`
 - **Structured Outputs** (JSON Schema):
   - OpenAI: `text.format = {type:"json_schema", ...}`
+  - Claude: define a tool with an `input_schema` and force a tool call (`tool_choice`)
   - Gemini: `generationConfig.responseMimeType="application/json"` + `generationConfig.responseSchema=<schema>`
   - Mistral: `response_format = {type:"json_schema", ...}` (when supported by the model)
   - Ollama: `format = <schema object>` (when supported by your Ollama model)
@@ -49,6 +50,13 @@ go build -o textualai -ldflags "-X github.com/benoit-pereira-da-silva/textualai/
 ```bash
 export OPENAI_API_KEY="..."
 ./textualai --model openai:gpt-4.1 --message "Write a haiku about terminals."
+```
+
+### Claude / Anthropic (one-shot)
+
+```bash
+export ANTHROPIC_API_KEY="..."
+./textualai --model claude:claude-3-5-sonnet-latest --message "Write a haiku about terminals."
 ```
 
 ### Gemini (one-shot)
@@ -100,6 +108,7 @@ There are 3 ways to choose the provider:
 
 ```bash
 ./textualai --model openai:gpt-4.1 ...
+./textualai --model claude:claude-3-5-sonnet-latest ...
 ./textualai --model gemini:gemini-2.5-flash ...
 ./textualai --model mistral:mistral-small-latest ...
 ./textualai --model ollama:llama3.1 ...
@@ -108,15 +117,17 @@ There are 3 ways to choose the provider:
 2) Use `--provider`
 
 ```bash
-./textualai --provider openai --model gpt-4.1 ...
-./textualai --provider gemini --model gemini-2.5-flash ...
+./textualai --provider openai  --model gpt-4.1 ...
+./textualai --provider claude  --model claude-3-5-sonnet-latest ...
+./textualai --provider gemini  --model gemini-2.5-flash ...
 ./textualai --provider mistral --model mistral-small-latest ...
-./textualai --provider ollama --model llama3.1 ...
+./textualai --provider ollama  --model llama3.1 ...
 ```
 
 3) Default: `--provider auto` (heuristics)
 
 - model starts with `gpt` or `o` → OpenAI
+- model starts with `claude` → Claude
 - model starts with `gemini` → Gemini
 - model starts with `mistral`, `codestral`, `ministral`, `devstral`, `magistral` → Mistral
 - otherwise → Ollama
@@ -226,6 +237,19 @@ export OPENAI_API_KEY="..."
 ./textualai --model openai:gpt-4.1   --json-schema ./schema.json   --message "What is the capital of France? Return JSON."
 ```
 
+### Claude JSON Schema (tool-call structured output)
+
+When `--json-schema` is provided with the Claude provider, the CLI:
+
+- Registers a tool named `--json-schema-name` (default: `response`) with `input_schema=<schema object>`
+- Forces the model to call it (`tool_choice={type:"tool",name:"..."}`)
+- Emits the tool call JSON input as the textual output
+
+```bash
+export ANTHROPIC_API_KEY="..."
+./textualai --model claude:claude-3-5-sonnet-latest   --json-schema ./schema.json   --message "What is the capital of France? Return JSON."
+```
+
 ### Gemini JSON Schema
 
 When `--json-schema` is provided with the Gemini provider, the CLI sets:
@@ -300,6 +324,14 @@ To request schema-based output (when supported):
 - `--openai-safety-identifier <id>`
 - `--openai-metadata key=value` (repeatable)
 - `--openai-include <csv>`
+
+### Claude-only
+
+- `--claude-base-url <url>` (default: `https://api.anthropic.com`)
+- `--claude-api-version <v>` (default: `2023-06-01`)
+- `--claude-stream[=bool]`
+- `--claude-top-k <int>`
+- `--claude-stop <csv>`
 
 ### Gemini-only
 
