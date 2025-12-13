@@ -58,9 +58,9 @@ func DefaultOpenAIBuilder(
 
 	switch strings.ToLower(cfg.AggregateType) {
 	case "line":
-		proc = proc.WithAggregateType(textualopenai.Line)
+		proc = proc.WithAggregateType(textualshared.Line)
 	default:
-		proc = proc.WithAggregateType(textualopenai.Word)
+		proc = proc.WithAggregateType(textualshared.Word)
 	}
 
 	// Role.
@@ -219,9 +219,9 @@ func DefaultGeminiBuilder(
 
 	switch strings.ToLower(cfg.AggregateType) {
 	case "line":
-		proc = proc.WithAggregateType(textualgemini.Line)
+		proc = proc.WithAggregateType(textualshared.Line)
 	default:
-		proc = proc.WithAggregateType(textualgemini.Word)
+		proc = proc.WithAggregateType(textualshared.Word)
 	}
 
 	// Role (Gemini roles: user|model).
@@ -294,9 +294,9 @@ func DefaultMistralBuilder(
 
 	switch strings.ToLower(cfg.AggregateType) {
 	case "line":
-		proc = proc.WithAggregateType(textualmistral.Line)
+		proc = proc.WithAggregateType(textualshared.Line)
 	default:
-		proc = proc.WithAggregateType(textualmistral.Word)
+		proc = proc.WithAggregateType(textualshared.Word)
 	}
 
 	if r := strings.ToLower(cfg.Role); r != "" {
@@ -365,9 +365,9 @@ func DefaultOllamaBuilder(
 
 	switch strings.ToLower(cfg.AggregateType) {
 	case "line":
-		proc = proc.WithAggregateType(textualollama.Line)
+		proc = proc.WithAggregateType(textualshared.Line)
 	default:
-		proc = proc.WithAggregateType(textualollama.Word)
+		proc = proc.WithAggregateType(textualshared.Word)
 	}
 
 	if r := strings.ToLower(cfg.Role); r != "" {
