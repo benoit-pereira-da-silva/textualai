@@ -25,7 +25,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"text/template"
 
 	"github.com/benoit-pereira-da-silva/textual/pkg/textual"
 	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/textualshared"
@@ -65,24 +64,15 @@ const (
 //   - BaseURL defaults to ANTHROPIC_BASE_URL (if set) or https://api.anthropic.com.
 //   - APIVersion defaults to ANTHROPIC_VERSION (if set) or 2023-06-01.
 type ResponseProcessor[S textual.Carrier[S]] struct {
+	// Shared behavior: prompt templating + aggregation settings.
+	// Embedded for DRY reuse across provider processors.
+	textualshared.ResponseProcessor[S]
+
 	// BaseURL is the Anthropic API base URL (default: https://api.anthropic.com).
 	BaseURL string `json:"baseURL,omitempty"`
 
 	// APIVersion is sent via the `anthropic-version` header (default: 2023-06-01).
 	APIVersion string `json:"apiVersion,omitempty"`
-
-	// Model is the Claude model identifier (e.g. "claude-3-5-sonnet-latest").
-	Model string `json:"model,omitempty"`
-
-	// Template is the prompt template used to build the message content.
-	// It is a Go text/template executed with templateData (Input/Text/Item).
-	Template template.Template `json:"template"`
-
-	// AggregateType controls how streamed content is chunked into outputs.
-	AggregateType textualshared.AggregateType `json:"aggregateType"`
-
-	// Role is used when the processor constructs a default message.
-	Role textualshared.Role `json:"role,omitempty"`
 
 	// ---------------------------
 	// Messages API request body
@@ -168,13 +158,6 @@ type ToolChoice struct {
 	Name string `json:"name,omitempty"` // tool name when Type=="tool"
 }
 
-// templateData is the context passed to the processor's Template.
-type templateData[S any] struct {
-	Input string // input.UTF8String()
-	Text  string // alias for readability
-	Item  S      // the full carrier value
-}
-
 // NewResponseProcessor builds a ResponseProcessor from a model name and a template string.
 //
 // Validation performed:
@@ -201,29 +184,26 @@ func NewResponseProcessor[S textual.Carrier[S]](model, templateStr string) (*Res
 		return nil, fmt.Errorf("model must not be empty")
 	}
 
-	tmpl, err := template.New("claude.messages").Parse(templateStr)
+	tmpl, err := textualshared.ParseTemplate("claude.messages", templateStr)
 	if err != nil {
-		return nil, fmt.Errorf("parse template: %w", err)
-	}
-
-	// Ensure there is an injection point for the incoming text.
-	if !strings.Contains(templateStr, "{{.Input}}") &&
-		!strings.Contains(templateStr, "{{ .Input }}") {
-		return nil, fmt.Errorf("template must contain an {{.Input}} placeholder")
+		return nil, err
 	}
 
 	stream := true
 	maxTokens := 1024
 
 	return &ResponseProcessor[S]{
-		BaseURL:       defaultBaseURL(),
-		APIVersion:    defaultAPIVersion(),
-		Model:         model,
-		Template:      *tmpl,
-		AggregateType: textualshared.Word,
-		Role:          RoleUser,
-		Stream:        &stream,
-		MaxTokens:     &maxTokens,
+		ResponseProcessor: textualshared.ResponseProcessor[S]{
+			Model:         model,
+			Role:          RoleUser,
+			Template:      tmpl,
+			AggregateType: textualshared.Word,
+		},
+		BaseURL:    defaultBaseURL(),
+		APIVersion: defaultAPIVersion(),
+
+		Stream:    &stream,
+		MaxTokens: &maxTokens,
 	}, nil
 }
 
@@ -232,51 +212,10 @@ func NewResponseProcessor[S textual.Carrier[S]](model, templateStr string) (*Res
 // It consumes incoming carrier values, sends each through the Claude Messages API
 // pipeline, and emits zero or more carrier values per input (streamed output).
 func (p ResponseProcessor[S]) Apply(ctx context.Context, in <-chan S) <-chan S {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	out := make(chan S)
-
-	go func() {
-		defer close(out)
-
-		for {
-			select {
-			case <-ctx.Done():
-				// Stop processing on cancellation and drain upstream so we don't
-				// block senders.
-				for range in {
-				}
-				return
-
-			case input, ok := <-in:
-				if !ok {
-					return
-				}
-
-				if err := p.processOne(ctx, input, out); err != nil {
-					// Attach the error to the item, keep stream alive.
-					errRes := input.WithError(err)
-					select {
-					case <-ctx.Done():
-						return
-					case out <- errRes:
-					}
-				}
-			}
-		}
-	}()
-
-	return out
+	return p.ResponseProcessor.Apply(ctx, in, p.handlePrompt)
 }
 
-func (p ResponseProcessor[S]) processOne(ctx context.Context, input S, out chan<- S) error {
-	prompt, err := p.buildPrompt(input)
-	if err != nil {
-		return fmt.Errorf("build prompt: %w", err)
-	}
-
+func (p ResponseProcessor[S]) handlePrompt(ctx context.Context, _ S, prompt string, out chan<- S) error {
 	streaming, reqBody, err := p.buildRequestBody(prompt)
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
@@ -287,23 +226,6 @@ func (p ResponseProcessor[S]) processOne(ctx context.Context, input S, out chan<
 	}
 
 	return nil
-}
-
-func (p ResponseProcessor[S]) buildPrompt(input S) (string, error) {
-	// Zero-valued Template has no parse tree; use the plain input text.
-	if p.Template.Tree == nil {
-		return input.UTF8String(), nil
-	}
-	var buf bytes.Buffer
-	data := templateData[S]{
-		Input: input.UTF8String(),
-		Text:  input.UTF8String(),
-		Item:  input,
-	}
-	if err := (&p.Template).Execute(&buf, data); err != nil {
-		return "", err
-	}
-	return buf.String(), nil
 }
 
 func defaultBaseURL() string {

@@ -25,10 +25,9 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"text/template"
-	"unicode"
 
 	"github.com/benoit-pereira-da-silva/textual/pkg/textual"
+	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/textualshared"
 )
 
 var apiKey = os.Getenv("GEMINI_API_KEY")
@@ -37,24 +36,9 @@ var apiKey = os.Getenv("GEMINI_API_KEY")
 // event naming conventions used elsewhere in the project.
 const TextualProcessorChatEvent = "gemini.responses"
 
-// AggregateType controls how streamed chunks are turned into output carrier values.
-//
-//   - Word: emit when we cross a whitespace / punctuation boundary.
-//   - Line: emit when we cross a newline boundary.
-type AggregateType string
-
 const (
-	Word AggregateType = "word"
-	Line AggregateType = "line"
-)
-
-// Role is the message role used for the top-level message when ResponseProcessor
-// builds a chat-like payload.
-type Role string
-
-const (
-	RoleUser  Role = "user"
-	RoleModel Role = "model"
+	RoleUser  textualshared.Role = "user"
+	RoleModel textualshared.Role = "model"
 )
 
 // ResponseProcessor is a textual.Processor that calls the Gemini API
@@ -78,29 +62,15 @@ const (
 //
 //   - GEMINI_API_KEY is required.
 type ResponseProcessor[S textual.Carrier[S]] struct {
+	// Shared behavior: prompt templating + aggregation settings.
+	// Embedded for DRY reuse across provider processors.
+	textualshared.ResponseProcessor[S]
+
 	// BaseURL is the base URL of the Gemini API (default: https://generativelanguage.googleapis.com).
 	BaseURL string `json:"baseURL,omitempty"`
 
 	// APIVersion is the REST API version (default: v1beta).
 	APIVersion string `json:"apiVersion,omitempty"`
-
-	// Model is the Gemini model identifier.
-	//
-	// You can pass:
-	//   - "gemini-2.5-flash" (will be normalized to "models/gemini-2.5-flash")
-	//   - "models/gemini-2.5-flash"
-	//   - "tunedModels/..." (left as-is)
-	Model string `json:"model,omitempty"`
-
-	// Template is the prompt template used to build the message text.
-	// It is a Go text/template executed with templateData (Input/Text/Item).
-	Template template.Template `json:"template"`
-
-	// AggregateType controls how streamed content is chunked into outputs.
-	AggregateType AggregateType `json:"aggregateType"`
-
-	// Role is used when the processor constructs a default content item.
-	Role Role `json:"role,omitempty"`
 
 	// Stream controls whether we call the SSE streaming endpoint
 	// (streamGenerateContent) or the non-streaming endpoint (generateContent).
@@ -206,13 +176,6 @@ func (o GenerationConfig) MarshalJSON() ([]byte, error) {
 	return json.Marshal(m)
 }
 
-// templateData is the context passed to the processor's Template.
-type templateData[S any] struct {
-	Input string // input.UTF8String()
-	Text  string // alias for readability
-	Item  S      // the full carrier value
-}
-
 // NewResponseProcessor builds a ResponseProcessor from a model name and a template string.
 //
 // Validation performed:
@@ -238,27 +201,24 @@ func NewResponseProcessor[S textual.Carrier[S]](model, templateStr string) (*Res
 		return nil, fmt.Errorf("model must not be empty")
 	}
 
-	tmpl, err := template.New("gemini").Parse(templateStr)
+	tmpl, err := textualshared.ParseTemplate("gemini", templateStr)
 	if err != nil {
-		return nil, fmt.Errorf("parse template: %w", err)
-	}
-
-	// Ensure there is an injection point for the incoming text.
-	if !strings.Contains(templateStr, "{{.Input}}") &&
-		!strings.Contains(templateStr, "{{ .Input }}") {
-		return nil, fmt.Errorf("template must contain an {{.Input}} placeholder")
+		return nil, err
 	}
 
 	stream := true
 
 	return &ResponseProcessor[S]{
-		BaseURL:       defaultBaseURL(),
-		APIVersion:    defaultAPIVersion(),
-		Model:         normalizeModel(model),
-		Template:      *tmpl,
-		AggregateType: Word,
-		Role:          RoleUser,
-		Stream:        &stream,
+		ResponseProcessor: textualshared.ResponseProcessor[S]{
+			Model:         normalizeModel(model),
+			Role:          RoleUser,
+			Template:      tmpl,
+			AggregateType: textualshared.Word,
+		},
+		BaseURL:    defaultBaseURL(),
+		APIVersion: defaultAPIVersion(),
+
+		Stream: &stream,
 	}, nil
 }
 
@@ -307,51 +267,10 @@ func normalizeModel(s string) string {
 // It consumes incoming carrier values, sends each through the Gemini API
 // pipeline, and emits zero or more carrier values per input (streamed output).
 func (p ResponseProcessor[S]) Apply(ctx context.Context, in <-chan S) <-chan S {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	out := make(chan S)
-
-	go func() {
-		defer close(out)
-
-		for {
-			select {
-			case <-ctx.Done():
-				// Stop processing on cancellation and drain upstream so we don't
-				// block senders.
-				for range in {
-				}
-				return
-
-			case input, ok := <-in:
-				if !ok {
-					return
-				}
-
-				if err := p.processOne(ctx, input, out); err != nil {
-					// Attach the error to the item, keep stream alive.
-					errRes := input.WithError(err)
-					select {
-					case <-ctx.Done():
-						return
-					case out <- errRes:
-					}
-				}
-			}
-		}
-	}()
-
-	return out
+	return p.ResponseProcessor.Apply(ctx, in, p.handlePrompt)
 }
 
-func (p ResponseProcessor[S]) processOne(ctx context.Context, input S, out chan<- S) error {
-	prompt, err := p.buildPrompt(input)
-	if err != nil {
-		return fmt.Errorf("build prompt: %w", err)
-	}
-
+func (p ResponseProcessor[S]) handlePrompt(ctx context.Context, _ S, prompt string, out chan<- S) error {
 	url, streaming, reqBody, err := p.buildRequest(prompt)
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
@@ -362,23 +281,6 @@ func (p ResponseProcessor[S]) processOne(ctx context.Context, input S, out chan<
 	}
 
 	return nil
-}
-
-func (p ResponseProcessor[S]) buildPrompt(input S) (string, error) {
-	// Zero-valued Template has no parse tree; use the plain input text.
-	if p.Template.Tree == nil {
-		return input.UTF8String(), nil
-	}
-	var buf bytes.Buffer
-	data := templateData[S]{
-		Input: input.UTF8String(),
-		Text:  input.UTF8String(),
-		Item:  input,
-	}
-	if err := (&p.Template).Execute(&buf, data); err != nil {
-		return "", err
-	}
-	return buf.String(), nil
 }
 
 func (p ResponseProcessor[S]) buildRequest(prompt string) (url string, streaming bool, body map[string]any, err error) {
@@ -545,7 +447,7 @@ func (p ResponseProcessor[S]) handleNonStreaming(ctx context.Context, r io.Reade
 		return nil
 	}
 
-	agg := newStreamAggregator(p.AggregateType)
+	agg := textualshared.NewStreamAggregator(p.AggregateType)
 	segments := agg.Append(text)
 	segments = append(segments, agg.Final()...)
 
@@ -575,7 +477,7 @@ func (p ResponseProcessor[S]) handleStreamingSSE(ctx context.Context, r io.Reade
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, maxScanTokenSize)
 
-	agg := newStreamAggregator(p.AggregateType)
+	agg := textualshared.NewStreamAggregator(p.AggregateType)
 	proto := *new(S)
 
 	var lastText string
@@ -688,13 +590,13 @@ func extractText(res generateContentResponse) string {
 // -----------------------
 
 // WithAggregateType returns a copy with AggregateType updated.
-func (p ResponseProcessor[S]) WithAggregateType(t AggregateType) ResponseProcessor[S] {
+func (p ResponseProcessor[S]) WithAggregateType(t textualshared.AggregateType) ResponseProcessor[S] {
 	p.AggregateType = t
 	return p
 }
 
 // WithRole sets the role used when the processor constructs its default content item.
-func (p ResponseProcessor[S]) WithRole(role Role) ResponseProcessor[S] {
+func (p ResponseProcessor[S]) WithRole(role textualshared.Role) ResponseProcessor[S] {
 	p.Role = role
 	return p
 }
@@ -861,87 +763,6 @@ func cloneGenerationConfig(in *GenerationConfig) *GenerationConfig {
 		}
 	}
 	return &dup
-}
-
-// --------------------------
-// Stream aggregation helpers
-// --------------------------
-
-type streamAggregator struct {
-	aggType     AggregateType
-	buffer      []rune
-	lastEmitPos int
-}
-
-func newStreamAggregator(aggType AggregateType) *streamAggregator {
-	if aggType != Word && aggType != Line {
-		aggType = Word
-	}
-	return &streamAggregator{
-		aggType:     aggType,
-		buffer:      make([]rune, 0),
-		lastEmitPos: 0,
-	}
-}
-
-func (a *streamAggregator) Append(chunk string) []string {
-	if chunk == "" {
-		return nil
-	}
-	a.buffer = append(a.buffer, []rune(chunk)...)
-
-	switch a.aggType {
-	case Word:
-		return a.collect(isWordBoundaryRune)
-	case Line:
-		return a.collect(func(r rune) bool { return r == '\n' })
-	default:
-		return a.collect(nil)
-	}
-}
-
-func (a *streamAggregator) Final() []string {
-	if len(a.buffer) == 0 || a.lastEmitPos >= len(a.buffer) {
-		return nil
-	}
-	a.lastEmitPos = len(a.buffer)
-	return []string{string(a.buffer)}
-}
-
-func (a *streamAggregator) collect(delim func(rune) bool) []string {
-	var out []string
-
-	if delim == nil {
-		if len(a.buffer) > a.lastEmitPos {
-			out = append(out, string(a.buffer))
-			a.lastEmitPos = len(a.buffer)
-		}
-		return out
-	}
-
-	for i := a.lastEmitPos; i < len(a.buffer); i++ {
-		if delim(a.buffer[i]) {
-			pos := i + 1
-			if pos <= a.lastEmitPos {
-				continue
-			}
-			out = append(out, string(a.buffer[:pos]))
-			a.lastEmitPos = pos
-		}
-	}
-	return out
-}
-
-func isWordBoundaryRune(r rune) bool {
-	if unicode.IsSpace(r) {
-		return true
-	}
-	switch r {
-	case '.', ',', ';', ':', '!', '?', '…', '»', '«':
-		return true
-	default:
-		return false
-	}
 }
 
 // --------------------------
