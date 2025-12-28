@@ -26,7 +26,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/benoit-pereira-da-silva/textual/pkg/textual"
+	"github.com/benoit-pereira-da-silva/textual/pkg/carrier"
 	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/textualshared"
 )
 
@@ -63,7 +63,7 @@ const (
 //   - ANTHROPIC_API_KEY is required.
 //   - BaseURL defaults to ANTHROPIC_BASE_URL (if set) or https://api.anthropic.com.
 //   - APIVersion defaults to ANTHROPIC_VERSION (if set) or 2023-06-01.
-type ResponseProcessor[S textual.Carrier[S]] struct {
+type ResponseProcessor[S carrier.Carrier[S]] struct {
 	// Shared behavior: prompt templating + aggregation settings.
 	// Embedded for DRY reuse across provider processors.
 	textualshared.ResponseProcessor[S]
@@ -174,7 +174,7 @@ type ToolChoice struct {
 //   - AggregateType: Word.
 //   - Role: user.
 //   - MaxTokens: 1024.
-func NewResponseProcessor[S textual.Carrier[S]](model, templateStr string) (*ResponseProcessor[S], error) {
+func NewResponseProcessor[S carrier.Carrier[S]](model, templateStr string) (*ResponseProcessor[S], error) {
 	if len(strings.TrimSpace(apiKey)) < 10 {
 		return nil, fmt.Errorf("invalid or missing ANTHROPIC_API_KEY")
 	}

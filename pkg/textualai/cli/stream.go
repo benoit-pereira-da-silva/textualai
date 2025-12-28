@@ -23,6 +23,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/benoit-pereira-da-silva/textual/pkg/carrier"
 	"github.com/benoit-pereira-da-silva/textual/pkg/textual"
 	"github.com/google/jsonschema-go/jsonschema"
 )
@@ -44,7 +45,7 @@ func withOptionalTimeout(parent context.Context, d OptDuration) (context.Context
 // delta between successive snapshots. It returns the final accumulated text.
 func DefaultStreamer(
 	ctx context.Context,
-	proc textual.Processor[textual.String],
+	proc textual.Processor[carrier.String],
 	prompt string,
 	outw *bufio.Writer,
 ) (string, error) {
@@ -57,8 +58,8 @@ func DefaultStreamer(
 		return "", errors.New("empty prompt")
 	}
 
-	in := make(chan textual.String, 1)
-	in <- textual.String{}.FromUTF8String(prompt).WithIndex(0)
+	in := make(chan carrier.String, 1)
+	in <- carrier.String{}.FromUTF8String(prompt).WithIndex(0)
 	close(in)
 
 	out := proc.Apply(ctx, in)
@@ -88,7 +89,7 @@ func DefaultStreamer(
 func interactiveLoop(
 	rootCtx context.Context,
 	cfg Config,
-	proc textual.Processor[textual.String],
+	proc textual.Processor[carrier.String],
 	render renderer,
 	inputSchema *jsonschema.Resolved,
 	outputSchema *jsonschema.Resolved,

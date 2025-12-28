@@ -25,7 +25,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/benoit-pereira-da-silva/textual/pkg/textual"
+	"github.com/benoit-pereira-da-silva/textual/pkg/carrier"
 	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/textualshared"
 )
 
@@ -63,7 +63,7 @@ const (
 //
 //   - MISTRAL_API_KEY is required.
 //   - BaseURL defaults to MISTRAL_BASE_URL (if set) or https://api.mistral.ai.
-type ResponseProcessor[S textual.Carrier[S]] struct {
+type ResponseProcessor[S carrier.Carrier[S]] struct {
 	// Shared behavior: prompt templating + aggregation settings.
 	// Embedded for DRY reuse across provider processors.
 	textualshared.ResponseProcessor[S]
@@ -201,7 +201,7 @@ type JSONSchema struct {
 //   - Parses the template string.
 //   - Ensures the template references {{.Input}} (or {{ .Input }}) so the
 //     incoming text is injected.
-func NewResponseProcessor[S textual.Carrier[S]](model, templateStr string) (*ResponseProcessor[S], error) {
+func NewResponseProcessor[S carrier.Carrier[S]](model, templateStr string) (*ResponseProcessor[S], error) {
 	if len(strings.TrimSpace(apiKey)) < 10 {
 		return nil, fmt.Errorf("invalid or missing MISTRAL_API_KEY")
 	}

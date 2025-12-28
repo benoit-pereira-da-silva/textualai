@@ -24,7 +24,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/benoit-pereira-da-silva/textual/pkg/textual"
+	"github.com/benoit-pereira-da-silva/textual/pkg/carrier"
 	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/textualshared"
 )
 
@@ -66,7 +66,7 @@ const (
 //
 //   - By default, BaseURL is resolved from OLLAMA_HOST (if set) or falls back
 //     to http://localhost:11434.
-type ResponseProcessor[S textual.Carrier[S]] struct {
+type ResponseProcessor[S carrier.Carrier[S]] struct {
 	// Shared behavior: prompt templating + aggregation settings.
 	// Embedded for DRY reuse across provider processors.
 	textualshared.ResponseProcessor[S]
@@ -338,7 +338,7 @@ type ToolCallFunction struct {
 //   - Stream: true.
 //   - AggregateType: Word.
 //   - Role: user.
-func NewResponseProcessor[S textual.Carrier[S]](model, templateStr string) (*ResponseProcessor[S], error) {
+func NewResponseProcessor[S carrier.Carrier[S]](model, templateStr string) (*ResponseProcessor[S], error) {
 	model = strings.TrimSpace(model)
 	if model == "" {
 		return nil, fmt.Errorf("model must not be empty")

@@ -24,6 +24,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/benoit-pereira-da-silva/textual/pkg/carrier"
 	"github.com/benoit-pereira-da-silva/textual/pkg/textual"
 	"github.com/google/jsonschema-go/jsonschema"
 )
@@ -37,13 +38,13 @@ type ProviderBuilder func(
 	outputSchema map[string]any,
 	getenv func(string) string,
 	stderr io.Writer,
-) (textual.Processor[textual.String], error)
+) (textual.Processor[carrier.String], error)
 
 // Streamer runs one prompt through the processor and streams the output to
 // outw. It returns the final accumulated text (last snapshot).
 type Streamer func(
 	ctx context.Context,
-	proc textual.Processor[textual.String],
+	proc textual.Processor[carrier.String],
 	prompt string,
 	outw *bufio.Writer,
 ) (string, error)
@@ -235,7 +236,7 @@ func (r *Runner) Run(argv []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	// Build the provider processor (default behavior).
-	var proc textual.Processor[textual.String]
+	var proc textual.Processor[carrier.String]
 	switch prov {
 	case ProviderOpenAI:
 		proc, err = r.OpenAIBuilder(rootCtx, cfg, modelName, "{{.Input}}", outputSchemaMap, r.Getenv, stderr)

@@ -25,7 +25,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/benoit-pereira-da-silva/textual/pkg/textual"
+	"github.com/benoit-pereira-da-silva/textual/pkg/carrier"
 	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/textualshared"
 )
 
@@ -80,7 +80,7 @@ const (
 //
 // You can override Input directly via WithInputString / WithInputItems (or set it
 // to nil and let the processor build the default payload).
-type ResponseProcessor[S textual.Carrier[S]] struct {
+type ResponseProcessor[S carrier.Carrier[S]] struct {
 	// Shared behavior: prompt templating + aggregation settings.
 	// Embedded for DRY reuse across provider processors.
 	textualshared.ResponseProcessor[S]
@@ -202,7 +202,7 @@ type FunctionTool struct {
 //   - Parses the template string.
 //   - Ensures the template references {{.Input}} (or {{ .Input }}) so the
 //     incoming text is injected.
-func NewResponseProcessor[S textual.Carrier[S]](model, templateStr string) (*ResponseProcessor[S], error) {
+func NewResponseProcessor[S carrier.Carrier[S]](model, templateStr string) (*ResponseProcessor[S], error) {
 	if len(strings.TrimSpace(apiKey)) < 10 {
 		return nil, fmt.Errorf("invalid or missing OPENAI_API_KEY")
 	}
