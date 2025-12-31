@@ -26,7 +26,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/benoit-pereira-da-silva/textual/pkg/carrier"
+	"github.com/benoit-pereira-da-silva/textual/pkg/textual"
 	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/textualshared"
 )
 
@@ -63,7 +63,7 @@ const (
 //   - ANTHROPIC_API_KEY is required.
 //   - BaseURL defaults to ANTHROPIC_BASE_URL (if set) or https://api.anthropic.com.
 //   - APIVersion defaults to ANTHROPIC_VERSION (if set) or 2023-06-01.
-type ResponseProcessor[S carrier.Carrier[S]] struct {
+type ResponseProcessor[S textual.Carrier[S]] struct {
 	// Shared behavior: prompt templating + aggregation settings.
 	// Embedded for DRY reuse across provider processors.
 	textualshared.ResponseProcessor[S]
@@ -115,15 +115,15 @@ type ResponseProcessor[S carrier.Carrier[S]] struct {
 
 	// EmitToolUse controls whether tool_use blocks are surfaced as textual output.
 	//
-	// When enabled, the processor emits ONLY the tool_use input JSON (as textual output)
+	// When enabled, the processor emits ONLY the tool_use input JsonCarrier (as textual output)
 	// and suppresses normal text streaming. This is the most reliable way to implement
 	// schema-based structured outputs across providers: force a tool call whose
 	// input_schema matches the desired output schema, and then validate the tool input.
 	//
 	// Streaming shape:
-	//   - tool_use input JSON deltas (input_json_delta.partial_json)
+	//   - tool_use input JsonCarrier deltas (input_json_delta.partial_json)
 	// Non-streaming shape:
-	//   - tool_use.input marshaled as JSON
+	//   - tool_use.input marshaled as JsonCarrier
 	EmitToolUse *bool `json:"-"`
 }
 
@@ -174,7 +174,7 @@ type ToolChoice struct {
 //   - AggregateType: Word.
 //   - Role: user.
 //   - MaxTokens: 1024.
-func NewResponseProcessor[S carrier.Carrier[S]](model, templateStr string) (*ResponseProcessor[S], error) {
+func NewResponseProcessor[S textual.Carrier[S]](model, templateStr string) (*ResponseProcessor[S], error) {
 	if len(strings.TrimSpace(apiKey)) < 10 {
 		return nil, fmt.Errorf("invalid or missing ANTHROPIC_API_KEY")
 	}
@@ -475,7 +475,7 @@ func (p ResponseProcessor[S]) handleNonStreaming(ctx context.Context, r io.Reade
 		return fmt.Errorf("decode response: %w", err)
 	}
 
-	// In EmitToolUse mode we prefer the tool input JSON and ignore normal text.
+	// In EmitToolUse mode we prefer the tool input JsonCarrier and ignore normal text.
 	var text string
 	if p.emitToolUseEnabled() {
 		text = extractToolUseInputJSON(res)
@@ -516,7 +516,7 @@ func (p ResponseProcessor[S]) handleStreamingSSE(ctx context.Context, r io.Reade
 
 	proto := *new(S)
 
-	// In EmitToolUse mode, emit ONLY tool JSON deltas.
+	// In EmitToolUse mode, emit ONLY tool JsonCarrier deltas.
 	if p.emitToolUseEnabled() {
 		aggTool := textualshared.NewStreamAggregator(p.AggregateType)
 

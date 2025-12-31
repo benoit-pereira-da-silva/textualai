@@ -26,7 +26,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/benoit-pereira-da-silva/textual/pkg/carrier"
+	"github.com/benoit-pereira-da-silva/textual/pkg/textual"
 	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/textualshared"
 )
 
@@ -61,7 +61,7 @@ const (
 // Environment:
 //
 //   - GEMINI_API_KEY is required.
-type ResponseProcessor[S carrier.Carrier[S]] struct {
+type ResponseProcessor[S textual.Carrier[S]] struct {
 	// Shared behavior: prompt templating + aggregation settings.
 	// Embedded for DRY reuse across provider processors.
 	textualshared.ResponseProcessor[S]
@@ -191,7 +191,7 @@ func (o GenerationConfig) MarshalJSON() ([]byte, error) {
 //   - Stream: true
 //   - AggregateType: Word
 //   - Role: user
-func NewResponseProcessor[S carrier.Carrier[S]](model, templateStr string) (*ResponseProcessor[S], error) {
+func NewResponseProcessor[S textual.Carrier[S]](model, templateStr string) (*ResponseProcessor[S], error) {
 	if len(strings.TrimSpace(apiKey)) < 10 {
 		return nil, fmt.Errorf("invalid or missing GEMINI_API_KEY")
 	}
@@ -364,7 +364,7 @@ func (p ResponseProcessor[S]) buildRequest(prompt string) (url string, streaming
 	return url, streaming, body, nil
 }
 
-// googleErrorResponse matches common Google JSON error shape.
+// googleErrorResponse matches common Google JsonCarrier error shape.
 type googleErrorResponse struct {
 	Error struct {
 		Code    int    `json:"code,omitempty"`

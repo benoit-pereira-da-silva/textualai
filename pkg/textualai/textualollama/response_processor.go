@@ -24,7 +24,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/benoit-pereira-da-silva/textual/pkg/carrier"
+	"github.com/benoit-pereira-da-silva/textual/pkg/textual"
 	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/textualshared"
 )
 
@@ -66,7 +66,7 @@ const (
 //
 //   - By default, BaseURL is resolved from OLLAMA_HOST (if set) or falls back
 //     to http://localhost:11434.
-type ResponseProcessor[S carrier.Carrier[S]] struct {
+type ResponseProcessor[S textual.Carrier[S]] struct {
 	// Shared behavior: prompt templating + aggregation settings.
 	// Embedded for DRY reuse across provider processors.
 	textualshared.ResponseProcessor[S]
@@ -84,7 +84,7 @@ type ResponseProcessor[S carrier.Carrier[S]] struct {
 	// Stream controls streaming mode (default is true).
 	Stream *bool `json:"stream,omitempty"`
 
-	// Format can be "json" or a JSON schema object (Structured Outputs).
+	// Format can be "json" or a JsonCarrier schema object (Structured Outputs).
 	Format any `json:"format,omitempty"`
 
 	// Options controls model/runtime parameters (temperature, top_p, num_ctx, ...).
@@ -311,7 +311,7 @@ func (t Tool) MarshalJSON() ([]byte, error) {
 type FunctionTool struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
-	Parameters  map[string]any `json:"parameters,omitempty"` // JSON Schema
+	Parameters  map[string]any `json:"parameters,omitempty"` // JsonCarrier Schema
 }
 
 // ToolCall is the minimal tool call representation returned by Ollama.
@@ -338,7 +338,7 @@ type ToolCallFunction struct {
 //   - Stream: true.
 //   - AggregateType: Word.
 //   - Role: user.
-func NewResponseProcessor[S carrier.Carrier[S]](model, templateStr string) (*ResponseProcessor[S], error) {
+func NewResponseProcessor[S textual.Carrier[S]](model, templateStr string) (*ResponseProcessor[S], error) {
 	model = strings.TrimSpace(model)
 	if model == "" {
 		return nil, fmt.Errorf("model must not be empty")
@@ -543,8 +543,8 @@ type chatResponseEvent struct {
 	Error      string      `json:"error,omitempty"`
 }
 
-// streamOllama performs a streaming POST to Ollama, parses newline-delimited JSON
-// events (or a single JSON object when stream=false), aggregates deltas
+// streamOllama performs a streaming POST to Ollama, parses newline-delimited JsonCarrier
+// events (or a single JsonCarrier object when stream=false), aggregates deltas
 // according to AggregateType, and emits carrier values on out.
 func (p ResponseProcessor[S]) streamOllama(
 	ctx context.Context,
@@ -641,7 +641,7 @@ func (p ResponseProcessor[S]) streamOllama(
 				return fmt.Errorf("ollama error: %s", strings.TrimSpace(ev.Error))
 			}
 			// We only stream message.content. Tool calls and thinking are currently
-			// not emitted as textual output (they remain available in the raw JSON).
+			// not emitted as textual output (they remain available in the raw JsonCarrier).
 			if err := emitSegments(ev.Message.Content); err != nil {
 				return err
 			}
@@ -724,7 +724,7 @@ func (p ResponseProcessor[S]) WithStream(v bool) ResponseProcessor[S] {
 //
 // Values:
 //   - "json" (string), or
-//   - a JSON schema object (map / struct) for structured outputs.
+//   - a JsonCarrier schema object (map / struct) for structured outputs.
 func (p ResponseProcessor[S]) WithFormat(format any) ResponseProcessor[S] {
 	p.Format = format
 	return p

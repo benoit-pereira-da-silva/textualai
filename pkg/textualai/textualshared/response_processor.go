@@ -21,7 +21,7 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/benoit-pereira-da-silva/textual/pkg/carrier"
+	"github.com/benoit-pereira-da-silva/textual/pkg/textual"
 )
 
 // ResponseProcessor centralizes the shared mechanics used by provider-specific
@@ -41,7 +41,7 @@ import (
 // across providers.
 //
 // Instead, provider processors call Apply(ctx, in, handler).
-type ResponseProcessor[S carrier.Carrier[S]] struct {
+type ResponseProcessor[S textual.Carrier[S]] struct {
 
 	// Model is the model identifier (e.g. "claude-3-5-sonnet-latest").
 	Model string `json:"model,omitempty"`
@@ -112,7 +112,7 @@ func (p ResponseProcessor[S]) BuildPrompt(input S) (string, error) {
 
 // PromptHandler is the provider-specific callback invoked by the shared Apply loop
 // once the prompt has been rendered.
-type PromptHandler[S carrier.Carrier[S]] func(
+type PromptHandler[S textual.Carrier[S]] func(
 	ctx context.Context,
 	input S,
 	prompt string,

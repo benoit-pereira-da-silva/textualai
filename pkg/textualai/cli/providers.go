@@ -21,7 +21,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/benoit-pereira-da-silva/textual/pkg/carrier"
 	"github.com/benoit-pereira-da-silva/textual/pkg/textual"
 	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/textualclaude"
 	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/textualgemini"
@@ -43,7 +42,7 @@ func DefaultOpenAIBuilder(
 	outputSchema map[string]any,
 	getenv func(string) string,
 	_ io.Writer,
-) (textual.Processor[carrier.String], error) {
+) (textual.Processor[textual.StringCarrier], error) {
 	if getenv == nil {
 		getenv = os.Getenv
 	}
@@ -51,7 +50,7 @@ func DefaultOpenAIBuilder(
 		return nil, errors.New("missing or invalid OPENAI_API_KEY (required for OpenAI provider)")
 	}
 
-	procPtr, err := textualopenai.NewResponseProcessor[carrier.String](model, templateStr)
+	procPtr, err := textualopenai.NewResponseProcessor[textual.StringCarrier](model, templateStr)
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +119,7 @@ func DefaultClaudeBuilder(
 	outputSchema map[string]any,
 	getenv func(string) string,
 	_ io.Writer,
-) (textual.Processor[carrier.String], error) {
+) (textual.Processor[textual.StringCarrier], error) {
 	if getenv == nil {
 		getenv = os.Getenv
 	}
@@ -128,7 +127,7 @@ func DefaultClaudeBuilder(
 		return nil, errors.New("missing or invalid ANTHROPIC_API_KEY (required for Claude provider)")
 	}
 
-	procPtr, err := textualclaude.NewResponseProcessor[carrier.String](model, templateStr)
+	procPtr, err := textualclaude.NewResponseProcessor[textual.StringCarrier](model, templateStr)
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +182,7 @@ func DefaultClaudeBuilder(
 		toolName := "response"
 		proc = proc.WithTools(textualclaude.Tool{
 			Name:        toolName,
-			Description: "Return a response that matches the provided JSON Schema.",
+			Description: "Return a response that matches the provided JsonCarrier Schema.",
 			InputSchema: outputSchema,
 		})
 		proc = proc.WithToolChoice(textualclaude.ToolChoice{
@@ -204,7 +203,7 @@ func DefaultGeminiBuilder(
 	outputSchema map[string]any,
 	getenv func(string) string,
 	_ io.Writer,
-) (textual.Processor[carrier.String], error) {
+) (textual.Processor[textual.StringCarrier], error) {
 	if getenv == nil {
 		getenv = os.Getenv
 	}
@@ -212,7 +211,7 @@ func DefaultGeminiBuilder(
 		return nil, errors.New("missing or invalid GEMINI_API_KEY (required for Gemini provider)")
 	}
 
-	procPtr, err := textualgemini.NewResponseProcessor[carrier.String](model, templateStr)
+	procPtr, err := textualgemini.NewResponseProcessor[textual.StringCarrier](model, templateStr)
 	if err != nil {
 		return nil, err
 	}
@@ -279,7 +278,7 @@ func DefaultMistralBuilder(
 	outputSchema map[string]any,
 	getenv func(string) string,
 	_ io.Writer,
-) (textual.Processor[carrier.String], error) {
+) (textual.Processor[textual.StringCarrier], error) {
 	if getenv == nil {
 		getenv = os.Getenv
 	}
@@ -287,7 +286,7 @@ func DefaultMistralBuilder(
 		return nil, errors.New("missing or invalid MISTRAL_API_KEY (required for Mistral provider)")
 	}
 
-	procPtr, err := textualmistral.NewResponseProcessor[carrier.String](model, templateStr)
+	procPtr, err := textualmistral.NewResponseProcessor[textual.StringCarrier](model, templateStr)
 	if err != nil {
 		return nil, err
 	}
@@ -357,8 +356,8 @@ func DefaultOllamaBuilder(
 	outputSchema map[string]any,
 	_ func(string) string,
 	_ io.Writer,
-) (textual.Processor[carrier.String], error) {
-	procPtr, err := textualollama.NewResponseProcessor[carrier.String](model, templateStr)
+) (textual.Processor[textual.StringCarrier], error) {
+	procPtr, err := textualollama.NewResponseProcessor[textual.StringCarrier](model, templateStr)
 	if err != nil {
 		return nil, err
 	}

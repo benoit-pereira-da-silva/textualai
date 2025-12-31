@@ -25,7 +25,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/benoit-pereira-da-silva/textual/pkg/carrier"
+	"github.com/benoit-pereira-da-silva/textual/pkg/textual"
 	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/textualshared"
 )
 
@@ -80,7 +80,7 @@ const (
 //
 // You can override Input directly via WithInputString / WithInputItems (or set it
 // to nil and let the processor build the default payload).
-type ResponseProcessor[S carrier.Carrier[S]] struct {
+type ResponseProcessor[S textual.Carrier[S]] struct {
 	// Shared behavior: prompt templating + aggregation settings.
 	// Embedded for DRY reuse across provider processors.
 	textualshared.ResponseProcessor[S]
@@ -137,7 +137,7 @@ type StreamOptions struct {
 	IncludeUsage *bool `json:"include_usage,omitempty"`
 }
 
-// TextConfig configures text output, either plain text or structured JSON.
+// TextConfig configures text output, either plain text or structured JsonCarrier.
 type TextConfig struct {
 	Format any `json:"format,omitempty"` // object; typically {type:"text"} or {type:"json_schema", json_schema:{...}}
 }
@@ -191,7 +191,7 @@ func (t Tool) MarshalJSON() ([]byte, error) {
 type FunctionTool struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
-	Parameters  map[string]any `json:"parameters,omitempty"` // JSON Schema
+	Parameters  map[string]any `json:"parameters,omitempty"` // JsonCarrier Schema
 }
 
 // NewResponseProcessor builds a ResponseProcessor from a model name and a template string.
@@ -202,7 +202,7 @@ type FunctionTool struct {
 //   - Parses the template string.
 //   - Ensures the template references {{.Input}} (or {{ .Input }}) so the
 //     incoming text is injected.
-func NewResponseProcessor[S carrier.Carrier[S]](model, templateStr string) (*ResponseProcessor[S], error) {
+func NewResponseProcessor[S textual.Carrier[S]](model, templateStr string) (*ResponseProcessor[S], error) {
 	if len(strings.TrimSpace(apiKey)) < 10 {
 		return nil, fmt.Errorf("invalid or missing OPENAI_API_KEY")
 	}

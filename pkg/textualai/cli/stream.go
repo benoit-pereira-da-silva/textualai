@@ -23,7 +23,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/benoit-pereira-da-silva/textual/pkg/carrier"
 	"github.com/benoit-pereira-da-silva/textual/pkg/textual"
 	"github.com/google/jsonschema-go/jsonschema"
 )
@@ -45,7 +44,7 @@ func withOptionalTimeout(parent context.Context, d OptDuration) (context.Context
 // delta between successive snapshots. It returns the final accumulated text.
 func DefaultStreamer(
 	ctx context.Context,
-	proc textual.Processor[carrier.String],
+	proc textual.Processor[textual.StringCarrier],
 	prompt string,
 	outw *bufio.Writer,
 ) (string, error) {
@@ -58,8 +57,8 @@ func DefaultStreamer(
 		return "", errors.New("empty prompt")
 	}
 
-	in := make(chan carrier.String, 1)
-	in <- carrier.String{}.FromUTF8String(prompt).WithIndex(0)
+	in := make(chan textual.StringCarrier, 1)
+	in <- textual.StringCarrier{}.FromUTF8String(prompt).WithIndex(0)
 	close(in)
 
 	out := proc.Apply(ctx, in)
@@ -89,7 +88,7 @@ func DefaultStreamer(
 func interactiveLoop(
 	rootCtx context.Context,
 	cfg Config,
-	proc textual.Processor[carrier.String],
+	proc textual.Processor[textual.StringCarrier],
 	render renderer,
 	inputSchema *jsonschema.Resolved,
 	outputSchema *jsonschema.Resolved,
@@ -174,7 +173,7 @@ func interactiveLoop(
 		if outputSchema != nil {
 			v, err := parseJSONAny(final)
 			if err != nil {
-				fmt.Fprintln(stderr, "Error: output is not valid JSON:", err)
+				fmt.Fprintln(stderr, "Error: output is not valid JsonCarrier:", err)
 				continue
 			}
 			if err := validateAgainstSchema(outputSchema, v); err != nil {

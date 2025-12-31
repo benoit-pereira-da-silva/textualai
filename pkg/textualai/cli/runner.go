@@ -24,7 +24,6 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/benoit-pereira-da-silva/textual/pkg/carrier"
 	"github.com/benoit-pereira-da-silva/textual/pkg/textual"
 	"github.com/google/jsonschema-go/jsonschema"
 )
@@ -38,13 +37,13 @@ type ProviderBuilder func(
 	outputSchema map[string]any,
 	getenv func(string) string,
 	stderr io.Writer,
-) (textual.Processor[carrier.String], error)
+) (textual.Processor[textual.StringCarrier], error)
 
 // Streamer runs one prompt through the processor and streams the output to
 // outw. It returns the final accumulated text (last snapshot).
 type Streamer func(
 	ctx context.Context,
-	proc textual.Processor[carrier.String],
+	proc textual.Processor[textual.StringCarrier],
 	prompt string,
 	outw *bufio.Writer,
 ) (string, error)
@@ -236,7 +235,7 @@ func (r *Runner) Run(argv []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	// Build the provider processor (default behavior).
-	var proc textual.Processor[carrier.String]
+	var proc textual.Processor[textual.StringCarrier]
 	switch prov {
 	case ProviderOpenAI:
 		proc, err = r.OpenAIBuilder(rootCtx, cfg, modelName, "{{.Input}}", outputSchemaMap, r.Getenv, stderr)
@@ -324,7 +323,7 @@ func (r *Runner) Run(argv []string, stdout io.Writer, stderr io.Writer) int {
 	if outputResolved != nil {
 		v, err := parseJSONAny(final)
 		if err != nil {
-			fmt.Fprintln(stderr, "Error: output is not valid JSON:", err)
+			fmt.Fprintln(stderr, "Error: output is not valid JsonCarrier:", err)
 			return 1
 		}
 		if err := validateAgainstSchema(outputResolved, v); err != nil {

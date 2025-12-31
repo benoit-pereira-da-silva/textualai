@@ -25,7 +25,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/benoit-pereira-da-silva/textual/pkg/carrier"
+	"github.com/benoit-pereira-da-silva/textual/pkg/textual"
 	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/textualshared"
 )
 
@@ -63,7 +63,7 @@ const (
 //
 //   - MISTRAL_API_KEY is required.
 //   - BaseURL defaults to MISTRAL_BASE_URL (if set) or https://api.mistral.ai.
-type ResponseProcessor[S carrier.Carrier[S]] struct {
+type ResponseProcessor[S textual.Carrier[S]] struct {
 	// Shared behavior: prompt templating + aggregation settings.
 	// Embedded for DRY reuse across provider processors.
 	textualshared.ResponseProcessor[S]
@@ -99,7 +99,7 @@ type ResponseProcessor[S carrier.Carrier[S]] struct {
 	FrequencyPenalty *float64 `json:"frequency_penalty,omitempty"`
 	PresencePenalty  *float64 `json:"presence_penalty,omitempty"`
 
-	// Structured outputs / JSON mode.
+	// Structured outputs / JsonCarrier mode.
 	ResponseFormat any `json:"response_format,omitempty"`
 
 	// Instructions is mapped to a system message when Messages is not explicitly set.
@@ -156,7 +156,7 @@ func (t Tool) MarshalJSON() ([]byte, error) {
 type FunctionTool struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
-	Parameters  map[string]any `json:"parameters,omitempty"` // JSON Schema
+	Parameters  map[string]any `json:"parameters,omitempty"` // JsonCarrier Schema
 }
 
 // ToolCall is the minimal tool call representation returned by Mistral.
@@ -176,7 +176,7 @@ type TextFormatText struct {
 	Type string `json:"type"` // "text"
 }
 
-// TextFormatJSONObject requests a JSON object response (no schema).
+// TextFormatJSONObject requests a JsonCarrier object response (no schema).
 type TextFormatJSONObject struct {
 	Type string `json:"type"` // "json_object"
 }
@@ -201,7 +201,7 @@ type JSONSchema struct {
 //   - Parses the template string.
 //   - Ensures the template references {{.Input}} (or {{ .Input }}) so the
 //     incoming text is injected.
-func NewResponseProcessor[S carrier.Carrier[S]](model, templateStr string) (*ResponseProcessor[S], error) {
+func NewResponseProcessor[S textual.Carrier[S]](model, templateStr string) (*ResponseProcessor[S], error) {
 	if len(strings.TrimSpace(apiKey)) < 10 {
 		return nil, fmt.Errorf("invalid or missing MISTRAL_API_KEY")
 	}
@@ -469,7 +469,7 @@ func (p ResponseProcessor[S]) streamChatCompletions(ctx context.Context, reqBody
 		return fmt.Errorf("mistral API returned %d: %s", resp.StatusCode, strings.TrimSpace(string(limited)))
 	}
 
-	// If stream=false, we get a single JSON response.
+	// If stream=false, we get a single JsonCarrier response.
 	stream := true
 	if p.Stream != nil {
 		stream = *p.Stream
@@ -731,13 +731,13 @@ func (p ResponseProcessor[S]) WithResponseFormatText() ResponseProcessor[S] {
 	return p
 }
 
-// WithResponseFormatJSONObject requests JSON object output (no schema).
+// WithResponseFormatJSONObject requests JsonCarrier object output (no schema).
 func (p ResponseProcessor[S]) WithResponseFormatJSONObject() ResponseProcessor[S] {
 	p.ResponseFormat = TextFormatJSONObject{Type: "json_object"}
 	return p
 }
 
-// WithResponseFormatJSONSchema sets response_format to JSON schema structured output.
+// WithResponseFormatJSONSchema sets response_format to JsonCarrier schema structured output.
 func (p ResponseProcessor[S]) WithResponseFormatJSONSchema(schema JSONSchemaFormat) ResponseProcessor[S] {
 	p.ResponseFormat = schema
 	return p
