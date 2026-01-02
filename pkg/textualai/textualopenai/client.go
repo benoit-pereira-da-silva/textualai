@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/benoit-pereira-da-silva/textual/pkg/textual"
 )
 
 // Client defines a textual client for OpenAI's platform
@@ -75,6 +77,43 @@ func (c Client) Stream(r Requestable) (*http.Response, error) {
 	}
 
 	return resp, nil
+}
+
+func (c Client) StreamAndTranscode(ctx context.Context, req *ResponsesRequest) (string, error) {
+	resp, err := c.Stream(req)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		req.RemoveListeners()
+		req.RemoveObservers()
+		_ = resp.Body.Close()
+	}()
+
+	// Apply the transcoder func to the body split by SSE event.
+	ioT := textual.NewIOReaderTranscoder[textual.JsonGenericCarrier[StreamEvent], textual.StringCarrier](req.Transcoder(), resp.Body)
+	ioT.SetSplitFunc(req.SplitFunc())
+	ioT.SetContext(ctx)
+	outCh := ioT.Start()
+
+	// To accumulate the values, we Consume the response channel
+	var b strings.Builder
+	for {
+		select {
+		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.Canceled) {
+				return "", ctx.Err()
+			}
+			return b.String(), ctx.Err()
+
+		case item, ok := <-outCh:
+			b.WriteString(item.Value)
+			if !ok {
+				// Return the accumulated string
+				return b.String(), nil // stream finished normally
+			}
+		}
+	}
 }
 
 func (c Client) ensureConfig() error {

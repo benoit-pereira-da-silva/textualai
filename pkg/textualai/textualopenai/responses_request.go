@@ -23,7 +23,7 @@ type ResponsesRequest struct {
 	// - no function calling.
 	//
 	// You can still support the conversation state by passing a full history in Input.
-	Model        string `json:"model,omitempty"`
+	Model        Model  `json:"model,omitempty"`
 	Input        any    `json:"input,omitempty"`
 	Stream       bool   `json:"stream,omitempty"`
 	Instructions string `json:"instructions,omitempty"`
@@ -44,10 +44,11 @@ type ResponsesRequest struct {
 	observers map[StreamEventType]func(e textual.JsonGenericCarrier[StreamEvent])
 }
 
-func NewResponsesRequest(ctx context.Context, f bufio.SplitFunc) *ResponsesRequest {
+func NewResponsesRequest(ctx context.Context, f bufio.SplitFunc, model Model) *ResponsesRequest {
 	return &ResponsesRequest{
 		ctx:             ctx,
 		splitFunc:       f,
+		Model:           model,
 		Input:           nil,
 		Stream:          true,
 		MaxOutputTokens: nil,
@@ -168,7 +169,7 @@ func (r *ResponsesRequest) Transcoder() textual.TranscoderFunc[textual.JsonGener
 				}
 			}
 			// The StreamEvent will be processed
-			// and we emit the result of the listener function.
+			// we emit the result of the listener function.
 			listenerFunc, ok := r.listeners[ev.Type]
 			if ok {
 				res := listenerFunc(c)
