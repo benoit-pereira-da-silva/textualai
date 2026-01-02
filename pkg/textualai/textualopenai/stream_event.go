@@ -14,6 +14,10 @@ The stream is ordered and SHOULD be processed sequentially.
 type StreamEventType string
 
 const (
+
+	// AllEvent permit observing or listen any StreamEventType
+	AllEvent StreamEventType = "all"
+
 	// ─────────────────────────────────────────────────────────────
 	// Lifecycle events
 	// ─────────────────────────────────────────────────────────────

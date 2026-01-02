@@ -40,8 +40,8 @@ type ResponsesRequest struct {
 
 	// Listeners
 	mu        sync.Mutex
-	listeners map[StreamEventType]func(e StreamEvent) textual.StringCarrier
-	observers map[StreamEventType]func(e StreamEvent)
+	listeners map[StreamEventType]func(e textual.JsonGenericCarrier[StreamEvent]) textual.StringCarrier
+	observers map[StreamEventType]func(e textual.JsonGenericCarrier[StreamEvent])
 }
 
 func NewResponsesRequest(ctx context.Context, f bufio.SplitFunc) *ResponsesRequest {
@@ -52,8 +52,8 @@ func NewResponsesRequest(ctx context.Context, f bufio.SplitFunc) *ResponsesReque
 		Stream:          true,
 		MaxOutputTokens: nil,
 		Thinking:        false,
-		listeners:       make(map[StreamEventType]func(e StreamEvent) textual.StringCarrier),
-		observers:       make(map[StreamEventType]func(e StreamEvent)),
+		listeners:       make(map[StreamEventType]func(e textual.JsonGenericCarrier[StreamEvent]) textual.StringCarrier),
+		observers:       make(map[StreamEventType]func(e textual.JsonGenericCarrier[StreamEvent])),
 	}
 }
 func (r *ResponsesRequest) Context() context.Context {
@@ -90,7 +90,7 @@ func (r *ResponsesRequest) SplitFunc() bufio.SplitFunc {
 	return r.splitFunc
 }
 
-func (r *ResponsesRequest) AddListeners(f func(e StreamEvent) textual.StringCarrier, et ...StreamEventType) error {
+func (r *ResponsesRequest) AddListeners(f func(e textual.JsonGenericCarrier[StreamEvent]) textual.StringCarrier, et ...StreamEventType) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, t := range et {
@@ -120,7 +120,7 @@ func (r *ResponsesRequest) RemoveListeners() {
 	}
 }
 
-func (r *ResponsesRequest) AddObservers(f func(e StreamEvent), et ...StreamEventType) error {
+func (r *ResponsesRequest) AddObservers(f func(e textual.JsonGenericCarrier[StreamEvent]), et ...StreamEventType) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, eventName := range et {
@@ -150,20 +150,35 @@ func (r *ResponsesRequest) RemoveObservers() {
 	}
 }
 
+// Transcoder returns a Transcoder that execute observation logic, and emits StreamEvent that have listeners.
 func (r *ResponsesRequest) Transcoder() textual.TranscoderFunc[textual.JsonGenericCarrier[StreamEvent], textual.StringCarrier] {
 	return func(ctx context.Context, in <-chan textual.JsonGenericCarrier[StreamEvent]) <-chan textual.StringCarrier {
 		return textual.AsyncEmitter(ctx, in, func(ctx context.Context, c textual.JsonGenericCarrier[StreamEvent], emit func(s textual.StringCarrier)) {
 			ev := c.Value
 			r.mu.Lock()
 			defer r.mu.Unlock()
+			// the StreamEvent is unaltered.
 			observerFunc, ok := r.observers[ev.Type]
 			if ok {
-				observerFunc(ev)
+				observerFunc(c)
+			} else {
+				observerFunc, ok = r.observers[AllEvent]
+				if ok {
+					observerFunc(c)
+				}
 			}
+			// The StreamEvent will be processed
+			// and we emit the result of the listener function.
 			listenerFunc, ok := r.listeners[ev.Type]
 			if ok {
-				res := listenerFunc(ev)
+				res := listenerFunc(c)
 				emit(res)
+			} else {
+				listenerFunc, ok = r.listeners[AllEvent]
+				if ok {
+					res := listenerFunc(c)
+					emit(res)
+				}
 			}
 		})
 	}

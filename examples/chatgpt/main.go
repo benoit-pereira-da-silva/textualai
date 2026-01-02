@@ -59,12 +59,12 @@ func main() {
 		}
 		return
 	}
-	runRepl(ctx, client, *maxOutputTokensFlag, *instructionsFlag, *thinking, *nonInteractivePrompt)
+	runRepl(ctx, client, *maxOutputTokensFlag, *instructionsFlag, *thinking)
 }
 
 // runRepl is a Minimal REP that keeps conversation history in memory.
-func runRepl(ctx context.Context, client textualopenai.Client, maxOutputTokens int, instructions string, thinking bool, prompt string) {
-	_, _ = fmt.Fprintln(os.Stderr, "textualopenai: enter a prompt and press Enter (Ctrl-D to quit, Ctrl-C to interrupt).")
+func runRepl(ctx context.Context, client textualopenai.Client, maxOutputTokens int, instructions string, thinking bool) {
+	_, _ = fmt.Fprintln(os.Stderr, "Enter a prompt and press Enter (Ctrl-D to quit, Ctrl-C to interrupt).")
 	scanner := bufio.NewScanner(os.Stdin)
 	history := make([]InputItem, 0, 16)
 	for {
@@ -90,9 +90,13 @@ func runRepl(ctx context.Context, client textualopenai.Client, maxOutputTokens i
 
 		// Add user turn.
 		history = append(history, InputItem{Role: "user", Content: content})
-
+		req, err := buildRequest(ctx, maxOutputTokens, instructions, thinking, history)
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			return
+		}
 		// Stream assistant response and append it to history.
-		assistantText, err := streamAssistant(ctx, client, maxOutputTokens, instructions, thinking, history)
+		assistantText, err := streamAssistant(ctx, client, req)
 		if err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, "\nerror:", err)
 			continue
@@ -106,7 +110,12 @@ func runRepl(ctx context.Context, client textualopenai.Client, maxOutputTokens i
 // runOnce just runs the request once.
 func runOnce(ctx context.Context, client textualopenai.Client, maxOutputTokens int, instructions string, thinking bool, prompt string) error {
 	history := []InputItem{{Role: "user", Content: prompt}}
-	_, err := streamAssistant(ctx, client, maxOutputTokens, instructions, thinking, history)
+	// Build the request and add the Listeners.
+	req, err := buildRequest(ctx, maxOutputTokens, instructions, thinking, history)
+	if err != nil {
+		return err
+	}
+	_, err = streamAssistant(ctx, client, req)
 	if err != nil {
 		return err
 	}
@@ -115,13 +124,7 @@ func runOnce(ctx context.Context, client textualopenai.Client, maxOutputTokens i
 }
 
 // streamAssistant streams conversational responses from OpenAI's API based on user input, history, and instructions. It processes events to generate a cohesive response string and handles streaming errors gracefully. Returns the combined response or an error.
-func streamAssistant(ctx context.Context, client textualopenai.Client, maxOutputTokens int, instructions string, thinking bool, history []InputItem) (string, error) {
-
-	// Build the request and add the Listeners.
-	req, err := buildRequest(ctx, maxOutputTokens, instructions, thinking, history)
-	if err != nil {
-		return "", err
-	}
+func streamAssistant(ctx context.Context, client textualopenai.Client, req *textualopenai.ResponsesRequest) (string, error) {
 
 	resp, err := client.Stream(req)
 	if err != nil {
@@ -156,6 +159,7 @@ func streamAssistant(ctx context.Context, client textualopenai.Client, maxOutput
 // optional instructions, maximum output tokens, and thinking mode. Returns the configured
 // request or an error if listener addition fails.
 func buildRequest(ctx context.Context, maxOutputTokens int, instructions string, thinking bool, history []InputItem) (*textualopenai.ResponsesRequest, error) {
+
 	req := textualopenai.NewResponsesRequest(ctx, textual.ScanJSON)
 	req.Input = history
 	req.Thinking = thinking
@@ -167,20 +171,19 @@ func buildRequest(ctx context.Context, maxOutputTokens int, instructions string,
 		req.MaxOutputTokens = &mot
 	}
 
-	listErr := req.AddListeners(func(e textualopenai.StreamEvent) textual.StringCarrier {
-		return textual.StringCarrierFrom(e.Text)
-	}, textualopenai.OutputTextDelta)
+	// Add listener for the event we wanna stream including error cases
+	listErr := req.AddListeners(func(c textual.JsonGenericCarrier[textualopenai.StreamEvent]) textual.StringCarrier {
+		return textualopenai.StringCarrierFrom(c) // handles the normal stream delta + errors.
+	}, textualopenai.OutputTextDelta, textualopenai.RefusalDelta, textualopenai.RefusalDone, textualopenai.ResponseFailed, textualopenai.Error)
 	if listErr != nil {
 		return nil, listErr
 	}
-
-	obsErr := req.AddObservers(func(e textualopenai.StreamEvent) {
-		// We log some explicit error partial or not.
-		_, _ = fmt.Fprintln(os.Stderr, "\n error:", e.ToJson())
-	}, textualopenai.RefusalDelta, textualopenai.RefusalDone, textualopenai.ResponseFailed, textualopenai.Error)
-	if obsErr != nil {
-		return nil, obsErr
-	}
-
+	// you can Add an observer for any event.
+	// obsErr := req.AddObservers(func(e textual.JsonGenericCarrier[textualopenai.StreamEvent]) {
+	// We can add a monitoring logic here
+	//}, textualopenai.AllEvent)
+	//if obsErr != nil {
+	//	return nil, obsErr
+	// }
 	return req, nil
 }
