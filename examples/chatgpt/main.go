@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -138,21 +139,33 @@ func streamAssistant(ctx context.Context, client textualopenai.Client, req *text
 
 	// Apply the transcoder func to the body split by SSE event.
 	ioT := textual.NewIOReaderTranscoder[textual.JsonGenericCarrier[textualopenai.StreamEvent], textual.StringCarrier](req.Transcoder(), resp.Body)
+	ioT.SetSplitFunc(req.SplitFunc())
 	ioT.SetContext(ctx)
 	outCh := ioT.Start()
 
 	// To accumulate the values, we Consume the response channel
 	var b strings.Builder
-	for item := range outCh {
-		if gErr := item.GetError(); gErr != nil {
-			// Keep the stream alive, but surface errors.
-			_, _ = fmt.Fprintln(os.Stderr, "\nstream error:", gErr)
-			continue
+	for {
+		select {
+		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.Canceled) {
+				return "", ctx.Err()
+			}
+			return b.String(), ctx.Err()
+
+		case item, ok := <-outCh:
+			if !ok {
+				return b.String(), nil // stream finished normally
+			}
+			if gErr := item.GetError(); gErr != nil {
+				// Keep the stream alive, but surface errors.
+				_, _ = fmt.Fprintln(os.Stderr, "\nstream error:", gErr)
+				continue
+			}
+			b.WriteString(item.Value)
+			_, _ = fmt.Fprint(os.Stdout, item.Value)
 		}
-		b.WriteString(item.Value)
-		_, _ = fmt.Fprint(os.Stdout, item.Value)
 	}
-	return b.String(), nil
 }
 
 // buildRequest creates and configures a textualopenai.ResponsesRequest with input data,
