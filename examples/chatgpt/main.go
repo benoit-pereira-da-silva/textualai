@@ -129,6 +129,7 @@ func streamAssistant(ctx context.Context, client textualopenai.Client, maxOutput
 	}
 	defer func() {
 		req.RemoveListeners()
+		req.RemoveObservers()
 		_ = resp.Body.Close()
 	}()
 
@@ -165,11 +166,20 @@ func buildRequest(ctx context.Context, maxOutputTokens int, instructions string,
 		mot := maxOutputTokens
 		req.MaxOutputTokens = &mot
 	}
-	err := req.AddListener(textualopenai.OutputTextDelta, func(e textualopenai.StreamEvent) textual.StringCarrier {
+
+	listErr := req.AddListeners(func(e textualopenai.StreamEvent) textual.StringCarrier {
 		return textual.StringCarrierFrom(e.Text)
-	})
-	if err != nil {
-		return nil, err
+	}, textualopenai.OutputTextDelta)
+	if listErr != nil {
+		return nil, listErr
+	}
+
+	obsErr := req.AddObservers(func(e textualopenai.StreamEvent) {
+		// We log some explicit error partial or not.
+		_, _ = fmt.Fprintln(os.Stderr, "\n error:", e.ToJson())
+	}, textualopenai.RefusalDelta, textualopenai.RefusalDone, textualopenai.ResponseFailed, textualopenai.Error)
+	if obsErr != nil {
+		return nil, obsErr
 	}
 
 	return req, nil
