@@ -62,12 +62,11 @@ func main() {
 	runRepl(ctx, client, *maxOutputTokensFlag, *instructionsFlag, *thinking, *nonInteractivePrompt)
 }
 
+// runRepl is a Minimal REP that keeps conversation history in memory.
 func runRepl(ctx context.Context, client textualopenai.Client, maxOutputTokens int, instructions string, thinking bool, prompt string) {
-	// Minimal REPL: keeps conversation history in memory.
 	_, _ = fmt.Fprintln(os.Stderr, "textualopenai: enter a prompt and press Enter (Ctrl-D to quit, Ctrl-C to interrupt).")
 	scanner := bufio.NewScanner(os.Stdin)
 	history := make([]InputItem, 0, 16)
-
 	for {
 		select {
 		case <-ctx.Done():
@@ -104,6 +103,7 @@ func runRepl(ctx context.Context, client textualopenai.Client, maxOutputTokens i
 	}
 }
 
+// runOnce just runs the request once.
 func runOnce(ctx context.Context, client textualopenai.Client, maxOutputTokens int, instructions string, thinking bool, prompt string) error {
 	history := []InputItem{{Role: "user", Content: prompt}}
 	_, err := streamAssistant(ctx, client, maxOutputTokens, instructions, thinking, history)
@@ -114,6 +114,7 @@ func runOnce(ctx context.Context, client textualopenai.Client, maxOutputTokens i
 	return nil
 }
 
+// streamAssistant streams conversational responses from OpenAI's API based on user input, history, and instructions. It processes events to generate a cohesive response string and handles streaming errors gracefully. Returns the combined response or an error.
 func streamAssistant(ctx context.Context, client textualopenai.Client, maxOutputTokens int, instructions string, thinking bool, history []InputItem) (string, error) {
 
 	// Build the request and add the Listeners.
@@ -150,6 +151,9 @@ func streamAssistant(ctx context.Context, client textualopenai.Client, maxOutput
 	return b.String(), nil
 }
 
+// buildRequest creates and configures a textualopenai.ResponsesRequest with input data,
+// optional instructions, maximum output tokens, and thinking mode. Returns the configured
+// request or an error if listener addition fails.
 func buildRequest(ctx context.Context, maxOutputTokens int, instructions string, thinking bool, history []InputItem) (*textualopenai.ResponsesRequest, error) {
 	req := textualopenai.NewResponsesRequest(ctx, textual.ScanJSON)
 	req.Input = history
