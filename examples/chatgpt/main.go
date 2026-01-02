@@ -29,7 +29,7 @@ func main() {
 	var (
 		modelFlag            = flag.String("model", "", "OpenAI model (overrides OPENAI_MODEL)")
 		baseURLFlag          = flag.String("base-url", "", "OpenAI base URL, e.g. https://api.openai.com/v1 (overrides OPENAI_API_URL)")
-		maxOutputTokensFlag  = flag.Int("max-output-tokens", 256, "Maximum output tokens (0 = omit)")
+		maxOutputTokensFlag  = flag.Int("max-output-tokens", 0, "Maximum output tokens (0 = omit)")
 		instructionsFlag     = flag.String("instructions", "", "Optional assistant instructions (system prompt)")
 		nonInteractivePrompt = flag.String("prompt", "", "If set, runs a single request and exits (otherwise starts a tiny REPL)")
 		thinking             = flag.Bool("thinking", false, "If set, thinking event that separates their reasoning trace from the final answer")
@@ -45,7 +45,7 @@ func main() {
 
 	// One-shot mode.
 	if strings.TrimSpace(*nonInteractivePrompt) != "" {
-		if err := runOnce(ctx, client, *maxOutputTokensFlag, *instructionsFlag, *thinking, *nonInteractivePrompt); err != nil {
+		if err := runOnce(ctx, client, *modelFlag, *maxOutputTokensFlag, *instructionsFlag, *thinking, *nonInteractivePrompt); err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -53,17 +53,17 @@ func main() {
 	}
 	// If no -prompt was provided but args exist, treat them as a one-shot prompt.
 	if argPrompt := strings.TrimSpace(strings.Join(flag.Args(), " ")); argPrompt != "" {
-		if err := runOnce(ctx, client, *maxOutputTokensFlag, *instructionsFlag, *thinking, argPrompt); err != nil {
+		if err := runOnce(ctx, client, *modelFlag, *maxOutputTokensFlag, *instructionsFlag, *thinking, argPrompt); err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
 		return
 	}
-	runRepl(ctx, client, *maxOutputTokensFlag, *instructionsFlag, *thinking)
+	runRepl(ctx, client, *modelFlag, *maxOutputTokensFlag, *instructionsFlag, *thinking)
 }
 
 // runRepl is a Minimal REP that keeps conversation history in memory.
-func runRepl(ctx context.Context, client textualopenai.Client, maxOutputTokens int, instructions string, thinking bool) {
+func runRepl(ctx context.Context, client textualopenai.Client, model string, maxOutputTokens int, instructions string, thinking bool) {
 	_, _ = fmt.Fprintln(os.Stderr, "Enter a prompt and press Enter (Ctrl-D to quit, Ctrl-C to interrupt).")
 	scanner := bufio.NewScanner(os.Stdin)
 	history := make([]InputItem, 0, 16)
@@ -90,7 +90,7 @@ func runRepl(ctx context.Context, client textualopenai.Client, maxOutputTokens i
 
 		// Add user turn.
 		history = append(history, InputItem{Role: "user", Content: content})
-		req, err := buildRequest(ctx, maxOutputTokens, instructions, thinking, history)
+		req, err := buildRequest(ctx, model, maxOutputTokens, instructions, thinking, history)
 		if err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, err)
 			return
@@ -108,10 +108,10 @@ func runRepl(ctx context.Context, client textualopenai.Client, maxOutputTokens i
 }
 
 // runOnce just runs the request once.
-func runOnce(ctx context.Context, client textualopenai.Client, maxOutputTokens int, instructions string, thinking bool, prompt string) error {
+func runOnce(ctx context.Context, client textualopenai.Client, model string, maxOutputTokens int, instructions string, thinking bool, prompt string) error {
 	history := []InputItem{{Role: "user", Content: prompt}}
 	// Build the request and add the Listeners.
-	req, err := buildRequest(ctx, maxOutputTokens, instructions, thinking, history)
+	req, err := buildRequest(ctx, model, maxOutputTokens, instructions, thinking, history)
 	if err != nil {
 		return err
 	}
@@ -158,9 +158,10 @@ func streamAssistant(ctx context.Context, client textualopenai.Client, req *text
 // buildRequest creates and configures a textualopenai.ResponsesRequest with input data,
 // optional instructions, maximum output tokens, and thinking mode. Returns the configured
 // request or an error if listener addition fails.
-func buildRequest(ctx context.Context, maxOutputTokens int, instructions string, thinking bool, history []InputItem) (*textualopenai.ResponsesRequest, error) {
+func buildRequest(ctx context.Context, model string, maxOutputTokens int, instructions string, thinking bool, history []InputItem) (*textualopenai.ResponsesRequest, error) {
 
 	req := textualopenai.NewResponsesRequest(ctx, textual.ScanJSON)
+	req.Model = model
 	req.Input = history
 	req.Thinking = thinking
 	if instructions != "" {
