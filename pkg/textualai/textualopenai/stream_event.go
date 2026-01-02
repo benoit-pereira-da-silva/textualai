@@ -1,5 +1,7 @@
 package textualopenai
 
+import "encoding/json"
+
 /*
 StreamEventType represents the semantic event types emitted by the OpenAI
 Responses API when streaming is enabled.
@@ -186,4 +188,9 @@ IsTextDelta returns true if the event carries incremental text output.
 */
 func (s StreamEvent) IsTextDelta() bool {
 	return s.Type == OutputTextDelta
+}
+
+func (s StreamEvent) ToJson() string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }

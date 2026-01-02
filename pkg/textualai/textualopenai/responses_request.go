@@ -39,8 +39,9 @@ type ResponsesRequest struct {
 	splitFunc bufio.SplitFunc
 
 	// Listeners
-	mu       sync.Mutex
-	callBack map[StreamEventType]func(e StreamEvent) textual.StringCarrier
+	mu        sync.Mutex
+	listeners map[StreamEventType]func(e StreamEvent) textual.StringCarrier
+	observers map[StreamEventType]func(e StreamEvent)
 }
 
 func NewResponsesRequest(ctx context.Context, f bufio.SplitFunc) *ResponsesRequest {
@@ -51,7 +52,8 @@ func NewResponsesRequest(ctx context.Context, f bufio.SplitFunc) *ResponsesReque
 		Stream:          true,
 		MaxOutputTokens: nil,
 		Thinking:        false,
-		callBack:        make(map[StreamEventType]func(e StreamEvent) textual.StringCarrier),
+		listeners:       make(map[StreamEventType]func(e StreamEvent) textual.StringCarrier),
+		observers:       make(map[StreamEventType]func(e StreamEvent)),
 	}
 }
 func (r *ResponsesRequest) Context() context.Context {
@@ -88,34 +90,63 @@ func (r *ResponsesRequest) SplitFunc() bufio.SplitFunc {
 	return r.splitFunc
 }
 
-func (r *ResponsesRequest) AddListener(eventName StreamEventType, f func(e StreamEvent) textual.StringCarrier) error {
+func (r *ResponsesRequest) AddListeners(f func(e StreamEvent) textual.StringCarrier, et ...StreamEventType) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.callBack == nil {
-		return errors.New("textualopenai: callBack channel is required")
+	for _, t := range et {
+		if _, ok := r.listeners[t]; ok {
+			return errors.New("duplicate listener call back")
+		}
+		r.listeners[t] = f
 	}
-	if _, ok := r.callBack[eventName]; ok {
-		return errors.New("duplicate listener call back")
-	}
-	r.callBack[eventName] = f
 	return nil
 }
 
-func (r *ResponsesRequest) RemoveListener(eventName StreamEventType) error {
+func (r *ResponsesRequest) RemoveListener(et StreamEventType) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, ok := r.callBack[eventName]; ok {
-		delete(r.callBack, eventName)
+	if _, ok := r.listeners[et]; ok {
+		delete(r.listeners, et)
 		return nil
 	}
-	return errors.New(fmt.Sprintf("listener %s not found", eventName))
+	return errors.New(fmt.Sprintf("listener %s not found", et))
 }
 
 func (r *ResponsesRequest) RemoveListeners() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for eventName, _ := range r.callBack {
-		delete(r.callBack, eventName)
+	for eventName, _ := range r.listeners {
+		delete(r.listeners, eventName)
+	}
+}
+
+func (r *ResponsesRequest) AddObservers(f func(e StreamEvent), et ...StreamEventType) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, eventName := range et {
+		if _, ok := r.observers[eventName]; ok {
+			return errors.New("duplicate observer call back")
+		}
+		r.observers[eventName] = f
+	}
+	return nil
+}
+
+func (r *ResponsesRequest) RemoveObserver(et StreamEventType) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.observers[et]; ok {
+		delete(r.observers, et)
+		return nil
+	}
+	return errors.New(fmt.Sprintf("observer %s not found", et))
+}
+
+func (r *ResponsesRequest) RemoveObservers() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for eventName, _ := range r.observers {
+		delete(r.observers, eventName)
 	}
 }
 
@@ -125,9 +156,13 @@ func (r *ResponsesRequest) Transcoder() textual.TranscoderFunc[textual.JsonGener
 			ev := c.Value
 			r.mu.Lock()
 			defer r.mu.Unlock()
-			f, ok := r.callBack[ev.Type]
+			observerFunc, ok := r.observers[ev.Type]
 			if ok {
-				res := f(ev)
+				observerFunc(ev)
+			}
+			listenerFunc, ok := r.listeners[ev.Type]
+			if ok {
+				res := listenerFunc(ev)
 				emit(res)
 			}
 		})
