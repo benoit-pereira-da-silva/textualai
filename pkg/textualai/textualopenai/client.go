@@ -9,8 +9,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-
-	"github.com/benoit-pereira-da-silva/textual/pkg/textual"
 )
 
 // Client defines a textual client for OpenAI's platform
@@ -77,70 +75,6 @@ func (c Client) Stream(r Requestable) (*http.Response, error) {
 	}
 
 	return resp, nil
-}
-
-// Process calls the endpoint.
-//
-// If an error occurs immediately, it returns an error.
-// If there is an error during processing, the error is stored in the Carrier.
-func Process[C textual.Carrier[C]](client Client, r Requestable, processor textual.Processor[C]) error {
-	if processor == nil {
-		return errors.New("textualopenai: nil processor")
-	}
-	if r == nil {
-		return errors.New("textualopenai: nil Request")
-	}
-
-	ctx := client.ctx
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	resp, err := client.Stream(r)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	ioProc := textual.NewIOReaderProcessor(processor, resp.Body)
-	ioProc.SetContext(ctx)
-	ioProc.SetSplitFunc(r.SplitFunc())
-	outCh := ioProc.Start()
-	for range outCh {
-		// Drain to completion so the request finishes before returning.
-	}
-	return nil
-}
-
-// Transcode calls the endpoint.
-//
-// If an error occurs immediately, it returns an error.
-// If there is an error during processing, the error is stored in the Carrier.
-func Transcode[C1 textual.Carrier[C1], C2 textual.Carrier[C2]](client Client, r Requestable, transcoder textual.Transcoder[C1, C2]) error {
-	if transcoder == nil {
-		return errors.New("textualopenai: nil transcoder")
-	}
-	if r == nil {
-		return errors.New("textualopenai: nil Request")
-	}
-
-	ctx := client.ctx
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	resp, err := client.Stream(r)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	ioProc := textual.NewIOReaderTranscoder(transcoder, resp.Body)
-	ioProc.SetContext(ctx)
-	ioProc.SetSplitFunc(r.SplitFunc())
-	outCh := ioProc.Start()
-	for range outCh {
-		// Drain to completion so the request finishes before returning.
-	}
-	return nil
 }
 
 func (c Client) ensureConfig() error {

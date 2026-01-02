@@ -3,6 +3,8 @@ package textualopenai
 import (
 	"bufio"
 	"context"
+
+	"github.com/benoit-pereira-da-silva/textual/pkg/textual"
 )
 
 type Requestable interface {
@@ -10,6 +12,6 @@ type Requestable interface {
 	URL(baseURL string) (string, error)
 	Validate() error
 	SplitFunc() bufio.SplitFunc
-	AddListener(eventName string, f func(e StreamEvent)) error
-	RemoveListener(eventName string) error
+	AddListener(eventName StreamEventType, f func(e StreamEvent) textual.StringCarrier) error
+	RemoveListener(eventName StreamEventType) error
 }

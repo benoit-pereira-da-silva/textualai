@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+
+	"github.com/benoit-pereira-da-silva/textual/pkg/textual"
 )
 
 // ResponsesRequest
@@ -38,7 +40,7 @@ type ResponsesRequest struct {
 
 	// Listeners
 	mu       sync.Mutex
-	callBack map[string]func(e StreamEvent)
+	callBack map[StreamEventType]func(e StreamEvent) textual.StringCarrier
 }
 
 func NewResponsesRequest(ctx context.Context, f bufio.SplitFunc) *ResponsesRequest {
@@ -49,7 +51,7 @@ func NewResponsesRequest(ctx context.Context, f bufio.SplitFunc) *ResponsesReque
 		Stream:          true,
 		MaxOutputTokens: nil,
 		Thinking:        false,
-		callBack:        make(map[string]func(e StreamEvent)),
+		callBack:        make(map[StreamEventType]func(e StreamEvent) textual.StringCarrier),
 	}
 }
 func (r *ResponsesRequest) Context() context.Context {
@@ -86,11 +88,11 @@ func (r *ResponsesRequest) SplitFunc() bufio.SplitFunc {
 	return r.splitFunc
 }
 
-func (r *ResponsesRequest) AddListener(eventName string, f func(e StreamEvent)) error {
+func (r *ResponsesRequest) AddListener(eventName StreamEventType, f func(e StreamEvent) textual.StringCarrier) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.callBack == nil {
-		r.callBack = make(map[string]func(e StreamEvent))
+		return errors.New("textualopenai: callBack channel is required")
 	}
 	if _, ok := r.callBack[eventName]; ok {
 		return errors.New("duplicate listener call back")
@@ -99,7 +101,7 @@ func (r *ResponsesRequest) AddListener(eventName string, f func(e StreamEvent)) 
 	return nil
 }
 
-func (r *ResponsesRequest) RemoveListener(eventName string) error {
+func (r *ResponsesRequest) RemoveListener(eventName StreamEventType) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, ok := r.callBack[eventName]; ok {
@@ -107,4 +109,27 @@ func (r *ResponsesRequest) RemoveListener(eventName string) error {
 		return nil
 	}
 	return errors.New(fmt.Sprintf("listener %s not found", eventName))
+}
+
+func (r *ResponsesRequest) RemoveListeners() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for eventName, _ := range r.callBack {
+		delete(r.callBack, eventName)
+	}
+}
+
+func (r *ResponsesRequest) Transcoder() textual.TranscoderFunc[textual.JsonGenericCarrier[StreamEvent], textual.StringCarrier] {
+	return func(ctx context.Context, in <-chan textual.JsonGenericCarrier[StreamEvent]) <-chan textual.StringCarrier {
+		return textual.AsyncEmitter(ctx, in, func(ctx context.Context, c textual.JsonGenericCarrier[StreamEvent], emit func(s textual.StringCarrier)) {
+			ev := c.Value
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			f, ok := r.callBack[ev.Type]
+			if ok {
+				res := f(ev)
+				emit(res)
+			}
+		})
+	}
 }

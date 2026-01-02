@@ -51,7 +51,6 @@ func main() {
 		}
 		return
 	}
-
 	// If no -prompt was provided but args exist, treat them as a one-shot prompt.
 	if argPrompt := strings.TrimSpace(strings.Join(flag.Args(), " ")); argPrompt != "" {
 		if err := runOnce(ctx, client, *maxOutputTokensFlag, *instructionsFlag, *thinking, argPrompt); err != nil {
@@ -60,7 +59,10 @@ func main() {
 		}
 		return
 	}
+	runRepl(ctx, client, *maxOutputTokensFlag, *instructionsFlag, *thinking, *nonInteractivePrompt)
+}
 
+func runRepl(ctx context.Context, client textualopenai.Client, maxOutputTokens int, instructions string, thinking bool, prompt string) {
 	// Minimal REPL: keeps conversation history in memory.
 	_, _ = fmt.Fprintln(os.Stderr, "textualopenai: enter a prompt and press Enter (Ctrl-D to quit, Ctrl-C to interrupt).")
 	scanner := bufio.NewScanner(os.Stdin)
@@ -91,7 +93,7 @@ func main() {
 		history = append(history, InputItem{Role: "user", Content: content})
 
 		// Stream assistant response and append it to history.
-		assistantText, err := streamAssistant(ctx, client, *maxOutputTokensFlag, *instructionsFlag, *thinking, history)
+		assistantText, err := streamAssistant(ctx, client, maxOutputTokens, instructions, thinking, history)
 		if err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, "\nerror:", err)
 			continue
@@ -114,28 +116,27 @@ func runOnce(ctx context.Context, client textualopenai.Client, maxOutputTokens i
 
 func streamAssistant(ctx context.Context, client textualopenai.Client, maxOutputTokens int, instructions string, thinking bool, history []InputItem) (string, error) {
 
-	req := textualopenai.NewResponsesRequest(ctx, textual.ScanJSON)
-	req.Input = history
-	req.Thinking = thinking
-	if instructions != "" {
-		req.Instructions = instructions
-	}
-	if maxOutputTokens > 0 {
-		mot := maxOutputTokens
-		req.MaxOutputTokens = &mot
+	// Build the request and add the Listeners.
+	req, err := buildRequest(ctx, maxOutputTokens, instructions, thinking, history)
+	if err != nil {
+		return "", err
 	}
 
 	resp, err := client.Stream(req)
 	if err != nil {
 		return "", err
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		req.RemoveListeners()
+		_ = resp.Body.Close()
+	}()
 
 	// Apply the transcoder func to the body split by SSE event.
-	ioT := textual.NewIOReaderTranscoder(transcoder, resp.Body)
+	ioT := textual.NewIOReaderTranscoder[textual.JsonGenericCarrier[textualopenai.StreamEvent], textual.StringCarrier](req.Transcoder(), resp.Body)
 	ioT.SetContext(ctx)
 	outCh := ioT.Start()
 
+	// To accumulate the values, we Consume the response channel
 	var b strings.Builder
 	for item := range outCh {
 		if gErr := item.GetError(); gErr != nil {
@@ -146,133 +147,26 @@ func streamAssistant(ctx context.Context, client textualopenai.Client, maxOutput
 		b.WriteString(item.Value)
 		_, _ = fmt.Fprint(os.Stdout, item.Value)
 	}
-
 	return b.String(), nil
 }
 
-var transcoder = textual.TranscoderFunc[textual.JsonGenericCarrier[textualopenai.StreamEvent], textual.StringCarrier](
-	func(ctx context.Context, in <-chan textual.JsonGenericCarrier[textualopenai.StreamEvent]) <-chan textual.StringCarrier {
-		return textual.AsyncEmitter(ctx, in, func(ctx context.Context, c textual.JsonGenericCarrier[textualopenai.StreamEvent], emit func(s textual.StringCarrier)) {
-			ev := c.Value
-			switch ev.Type {
+func buildRequest(ctx context.Context, maxOutputTokens int, instructions string, thinking bool, history []InputItem) (*textualopenai.ResponsesRequest, error) {
+	req := textualopenai.NewResponsesRequest(ctx, textual.ScanJSON)
+	req.Input = history
+	req.Thinking = thinking
+	if instructions != "" {
+		req.Instructions = instructions
+	}
+	if maxOutputTokens > 0 {
+		mot := maxOutputTokens
+		req.MaxOutputTokens = &mot
+	}
+	err := req.AddListener(textualopenai.OutputTextDelta, func(e textualopenai.StreamEvent) textual.StringCarrier {
+		return textual.StringCarrierFrom(e.Text)
+	})
+	if err != nil {
+		return nil, err
+	}
 
-			// ─────────────────────────────────────────────────────
-			// Lifecycle events
-			// ─────────────────────────────────────────────────────
-
-			case textualopenai.ResponseCreated:
-				// Response object created; no textual payload to emit yet.
-
-			case textualopenai.ResponseInProgress:
-				// Model is generating output; informational only.
-
-			case textualopenai.ResponseCompleted:
-				// The entire response lifecycle is complete; the channel will close soon.
-
-			case textualopenai.ResponseFailed:
-				// Response failed; error details may appear elsewhere.
-
-			// ─────────────────────────────────────────────────────
-			// Text output events
-			// ─────────────────────────────────────────────────────
-
-			case textualopenai.OutputTextDelta:
-				// Incremental text chunk; Text or Delta may be populated
-				// depending on upstream normalization.
-				emit(textual.StringFrom(ev.Text))
-
-			case textualopenai.TextDone:
-				// Text channel is complete; other response events may still follow.
-
-			case textualopenai.OutputTextAnnotationAdded:
-			// Text metadata / annotation; not part of user-visible text.
-
-			// ReasoningSummaryTextDelta contains an incremental chunk of the model's
-			// reasoning summary text (if reasoning summaries are enabled).
-			// The `Delta` field will be populated.
-			case textualopenai.ReasoningSummaryTextDelta:
-
-				// ReasoningSummaryTextDone indicates that all reasoning summary text
-				// has been streamed.
-			case textualopenai.ReasoningSummaryTextDone:
-
-			// ReasoningSummaryPartAdded signals that a new reasoning summary part
-			// has been added (for multi-part summaries).
-			case textualopenai.ReasoningSummaryPartAdded:
-
-				// ReasoningSummaryPartDone indicates that the current reasoning summary part
-				// has completed.
-			case textualopenai.ReasoningSummaryPartDone:
-
-			// ─────────────────────────────────────────────────────
-			// Structured output events
-			// ─────────────────────────────────────────────────────
-
-			case textualopenai.OutputItemAdded:
-				// Structured output item (tool call, block, etc.) added.
-
-			case textualopenai.OutputItemDone:
-				// Structured output item fully emitted.
-
-			// ─────────────────────────────────────────────────────
-			// Function / tool call events
-			// ─────────────────────────────────────────────────────
-
-			case textualopenai.FunctionCallArgumentsDelta:
-				// Incremental function-call arguments (JsonCarrier); ignored here.
-
-			case textualopenai.FunctionCallArgumentsDone:
-				// Function-call arguments completed.
-
-			// ─────────────────────────────────────────────────────
-			// Code interpreter events
-			// ─────────────────────────────────────────────────────
-
-			case textualopenai.CodeInterpreterInProgress:
-				// Code interpreter has started execution.
-
-			case textualopenai.CodeInterpreterCallCodeDelta:
-				// Incremental code being executed by the interpreter.
-
-			case textualopenai.CodeInterpreterCallCodeDone:
-				// Code emission complete.
-
-			case textualopenai.CodeInterpreterCallInterpreting:
-				// Interpreter evaluating results.
-
-			case textualopenai.CodeInterpreterCallCompleted:
-				// Interpreter execution fully completed.
-
-			// ─────────────────────────────────────────────────────
-			// File search events
-			// ─────────────────────────────────────────────────────
-
-			case textualopenai.FileSearchCallInProgress:
-				// File search tool invocation started.
-
-			case textualopenai.FileSearchCallSearching:
-				// File search actively querying sources.
-
-			case textualopenai.FileSearchCallCompleted:
-				// File search completed.
-
-			// ─────────────────────────────────────────────────────
-			// Refusal & error events
-			// ─────────────────────────────────────────────────────
-
-			case textualopenai.RefusalDelta:
-				// Partial refusal message; intentionally ignored.
-
-			case textualopenai.RefusalDone:
-				// Refusal message complete.
-
-			case textualopenai.Error:
-				// Stream-level error event; handled upstream or via context.
-
-			default:
-				// Unknown or future event type; safely ignored for forward compatibility.
-			}
-		},
-		)
-	},
-)
+	return req, nil
+}
