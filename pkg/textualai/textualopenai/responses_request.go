@@ -41,6 +41,51 @@ type ResponsesRequest struct {
 	callBack map[string]func(e StreamEvent)
 }
 
+func NewResponsesRequest(ctx context.Context, f bufio.SplitFunc) *ResponsesRequest {
+	return &ResponsesRequest{
+		ctx:             ctx,
+		splitFunc:       f,
+		Input:           nil,
+		Stream:          true,
+		MaxOutputTokens: nil,
+		Thinking:        false,
+		callBack:        make(map[string]func(e StreamEvent)),
+	}
+}
+func (r *ResponsesRequest) Context() context.Context {
+	return r.ctx
+}
+
+func (r *ResponsesRequest) URL(baseURL string) (string, error) {
+	if strings.TrimSpace(baseURL) == "" {
+		return "", errors.New("textualopenai: missing OpenAI base URL")
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("textualopenai: invalid base URL: %w", err)
+	}
+	basePath := strings.TrimSuffix(u.Path, "/")
+	u.Path = basePath + "/responses"
+	return u.String(), nil
+}
+
+func (r *ResponsesRequest) Validate() error {
+	if r.Model == "" {
+		return errors.New("textualopenai: model is required")
+	}
+	if r.Input == nil {
+		return errors.New("textualopenai: input is required")
+	}
+	if r.Stream == false {
+		return errors.New("textualopenai: streaming must be enabled")
+	}
+	return nil
+}
+
+func (r *ResponsesRequest) SplitFunc() bufio.SplitFunc {
+	return r.splitFunc
+}
+
 func (r *ResponsesRequest) AddListener(eventName string, f func(e StreamEvent)) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -62,50 +107,4 @@ func (r *ResponsesRequest) RemoveListener(eventName string) error {
 		return nil
 	}
 	return errors.New(fmt.Sprintf("listener %s not found", eventName))
-}
-
-func NewResponsesRequest(ctx context.Context, f bufio.SplitFunc) *ResponsesRequest {
-	return &ResponsesRequest{
-		ctx:             ctx,
-		splitFunc:       f,
-		Input:           nil,
-		Stream:          true,
-		MaxOutputTokens: nil,
-		Thinking:        false,
-		callBack:        make(map[string]func(e StreamEvent)),
-	}
-}
-
-func (r *ResponsesRequest) Validate() error {
-	if r.Model == "" {
-		return errors.New("textualopenai: model is required")
-	}
-	if r.Input == nil {
-		return errors.New("textualopenai: input is required")
-	}
-	if r.Stream == false {
-		return errors.New("textualopenai: streaming must be enabled")
-	}
-	return nil
-}
-
-func (r *ResponsesRequest) URL(baseURL string) (string, error) {
-	if strings.TrimSpace(baseURL) == "" {
-		return "", errors.New("textualopenai: missing OpenAI base URL")
-	}
-	u, err := url.Parse(baseURL)
-	if err != nil {
-		return "", fmt.Errorf("textualopenai: invalid base URL: %w", err)
-	}
-	basePath := strings.TrimSuffix(u.Path, "/")
-	u.Path = basePath + "/responses"
-	return u.String(), nil
-}
-
-func (r *ResponsesRequest) Context() context.Context {
-	return r.ctx
-}
-
-func (r *ResponsesRequest) SplitFunc() bufio.SplitFunc {
-	return r.splitFunc
 }
