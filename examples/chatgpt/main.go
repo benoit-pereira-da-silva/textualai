@@ -97,7 +97,7 @@ func runRepl(ctx context.Context, client textualopenai.Client, model string, max
 			return
 		}
 		// Stream assistant response and append it to history.
-		assistantText, headerInfos, err := client.StreamAndTranscode(ctx, req)
+		assistantText, headerInfos, err := client.StreamAndTranscodeResponses(ctx, req)
 		if err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, "\nerror:", err)
 			continue
@@ -118,7 +118,7 @@ func runOnce(ctx context.Context, client textualopenai.Client, model string, max
 	if err != nil {
 		return err
 	}
-	_, headerInfos, stErr := client.StreamAndTranscode(ctx, req)
+	_, headerInfos, stErr := client.StreamAndTranscodeResponses(ctx, req)
 	if displayHeaders {
 		_, _ = fmt.Fprintln(os.Stdout, "\n", headerInfos.ToString())
 	}

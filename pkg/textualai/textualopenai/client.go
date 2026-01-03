@@ -83,7 +83,7 @@ func (c Client) Stream(r Requestable) (*http.Response, error) {
 	return resp, nil
 }
 
-func (c Client) StreamAndTranscode(ctx context.Context, req *ResponsesRequest) (string, HeaderInfos, error) {
+func (c Client) StreamAndTranscodeResponses(ctx context.Context, req *ResponsesRequest) (string, HeaderInfos, error) {
 	resp, err := c.Stream(req)
 	headerInfos := HeaderInfosFromHTTPResponse(resp)
 	if err != nil {
