@@ -17,17 +17,40 @@ func StringCarrierFrom(c textual.JsonGenericCarrier[StreamEvent]) textual.String
 
 	// Field semantics:
 	//  - Type: The event type identifier (always present)
-	//  - Delta: Incremental text or JSON fragment
-	//  - Text: Full text payload (non-streamed events) not normal in our context.
-	//  - Code: Code being executed (code interpreter events)
-	// - Message: Error or informational message
+	//  - Delta: Incremental text or JSON fragment (depending on the event type)
+	//  - Text: Finalized text payload for *.done events
+	//  - Refusal: Finalized refusal payload for refusal *.done events
+	//  - Code: Code being executed (code interpreter events) OR the error code (error events)
+	//  - Message: Error or informational message
 
 	switch ev.Type {
 	case OutputTextDelta:
 		s.Value = ev.Delta
-	case ResponseFailed, RefusalDone, RefusalDelta:
-		s.Value = ev.Message
-		s = s.WithError(fmt.Errorf("\neventType: %s error: %s", ev.Type, ev.Message))
+
+	case TextDone:
+		// Do not emit the full text again: streaming clients already received the deltas.
+		s.Value = ""
+
+	case RefusalDelta:
+		s.Value = ev.Delta
+		s = s.WithError(fmt.Errorf("\neventType: %s refusal: %s", ev.Type, ev.Delta))
+
+	case RefusalDone:
+		s.Value = ev.Refusal
+		s = s.WithError(fmt.Errorf("\neventType: %s refusal: %s", ev.Type, ev.Refusal))
+
+	case ResponseFailed, Error:
+		// Response failures and "error" events should be surfaced as errors.
+		msg := ev.Message
+		if msg == "" && ev.Refusal != "" {
+			msg = ev.Refusal
+		}
+		if msg == "" && ev.Text != "" {
+			msg = ev.Text
+		}
+		s.Value = msg
+		s = s.WithError(fmt.Errorf("\neventType: %s error: %s", ev.Type, msg))
+
 	default:
 		if ev.Text != "" {
 			s.Value = ev.Text

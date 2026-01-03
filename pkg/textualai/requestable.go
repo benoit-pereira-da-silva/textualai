@@ -1,4 +1,4 @@
-package textualopenai
+package textualai
 
 import (
 	"context"

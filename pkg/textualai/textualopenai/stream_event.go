@@ -10,12 +10,16 @@ Each streamed message is a JSON object with a `type` field and optional
 payload fields depending on the event.
 
 The stream is ordered and SHOULD be processed sequentially.
+
+Streaming event schemas:
+https://platform.openai.com/docs/api-reference/responses-streaming
 */
 type EventType string
 
 const (
 
-	// AllEvent permit observing or listen any EventType
+	// AllEvent permit observing or listen any EventType.
+	// This is not an OpenAI event type: it is a local wildcard.
 	AllEvent EventType = "all"
 
 	// ─────────────────────────────────────────────────────────────
@@ -25,6 +29,10 @@ const (
 	// ResponseCreated is emitted once when the response object
 	// has been created and inference begins.
 	ResponseCreated EventType = "response.created"
+
+	// ResponseQueued is emitted when a response is queued and waiting
+	// to be processed.
+	ResponseQueued EventType = "response.queued"
 
 	// ResponseInProgress is emitted while the model is actively
 	// generating output.
@@ -38,6 +46,18 @@ const (
 	ResponseFailed EventType = "response.failed"
 
 	// ─────────────────────────────────────────────────────────────
+	// Output item events
+	// ─────────────────────────────────────────────────────────────
+
+	// OutputItemAdded signals that a structured output item
+	// (e.g. tool call, message block) has been added.
+	OutputItemAdded EventType = "response.output_item.added"
+
+	// OutputItemDone indicates that the structured output item
+	// has completed.
+	OutputItemDone EventType = "response.output_item.done"
+
+	// ─────────────────────────────────────────────────────────────
 	// Text output events
 	// ─────────────────────────────────────────────────────────────
 
@@ -45,12 +65,13 @@ const (
 	// The `Delta` field will be populated.
 	OutputTextDelta EventType = "response.output_text.delta"
 
-	// TextDone indicates that all text output has been streamed.
-	TextDone EventType = "response.text.done"
+	// TextDone indicates that all text content for a given output item / content part
+	// has been streamed.
+	TextDone EventType = "response.output_text.done"
 
 	// OutputTextAnnotationAdded carries metadata or annotations
 	// associated with the generated text.
-	OutputTextAnnotationAdded EventType = "response.output_text_annotation_added"
+	OutputTextAnnotationAdded EventType = "response.output_text.annotation.added"
 
 	// ─────────────────────────────────────────────────────────────
 	// Reasoning summary events
@@ -74,52 +95,46 @@ const (
 	ReasoningSummaryPartDone EventType = "response.reasoning_summary_part.done"
 
 	// ─────────────────────────────────────────────────────────────
-	// Structured output events
-	// ─────────────────────────────────────────────────────────────
-
-	// OutputItemAdded signals that a structured output item
-	// (e.g. tool call, message block) has been added.
-	OutputItemAdded EventType = "response.output_item_added"
-
-	// OutputItemDone indicates that the structured output item
-	// has completed.
-	OutputItemDone EventType = "response.output_item_done"
-
-	// ─────────────────────────────────────────────────────────────
 	// Function / tool call events
 	// ─────────────────────────────────────────────────────────────
 
 	// FunctionCallArgumentsDelta streams incremental JSON
-	// arguments for a function or tool call.
+	// arguments for a function/tool call.
 	FunctionCallArgumentsDelta EventType = "response.function_call_arguments.delta"
 
 	// FunctionCallArgumentsDone signals that the function
 	// call arguments are fully streamed.
 	FunctionCallArgumentsDone EventType = "response.function_call_arguments.done"
 
+	// CustomToolCallInputDelta streams incremental custom tool input.
+	CustomToolCallInputDelta EventType = "response.custom_tool_call_input.delta"
+
+	// CustomToolCallInputDone signals that the custom tool input is finalized.
+	CustomToolCallInputDone EventType = "response.custom_tool_call_input.done"
+
 	// ─────────────────────────────────────────────────────────────
 	// Code Interpreter events
 	// ─────────────────────────────────────────────────────────────
 
-	// CodeInterpreterInProgress indicates that the code
-	// interpreter tool is executing.
-	CodeInterpreterInProgress EventType = "response.code_interpreter_in_progress"
+	// CodeInterpreterInProgress indicates that a code interpreter tool call
+	// is in progress.
+	CodeInterpreterInProgress EventType = "response.code_interpreter_call.in_progress"
 
 	// CodeInterpreterCallCodeDelta streams code being executed
 	// by the interpreter.
-	CodeInterpreterCallCodeDelta EventType = "response.code_interpreter_call_code_delta"
+	CodeInterpreterCallCodeDelta EventType = "response.code_interpreter_call_code.delta"
 
 	// CodeInterpreterCallCodeDone signals that code streaming
 	// has completed.
-	CodeInterpreterCallCodeDone EventType = "response.code_interpreter_call_code_done"
+	CodeInterpreterCallCodeDone EventType = "response.code_interpreter_call_code.done"
 
 	// CodeInterpreterCallInterpreting indicates that the
 	// interpreter is evaluating results.
-	CodeInterpreterCallInterpreting EventType = "response.code_interpreter_call_interpreting"
+	CodeInterpreterCallInterpreting EventType = "response.code_interpreter_call.interpreting"
 
 	// CodeInterpreterCallCompleted indicates the interpreter
 	// call has fully completed.
-	CodeInterpreterCallCompleted EventType = "response.code_interpreter_call_completed"
+	CodeInterpreterCallCompleted EventType = "response.code_interpreter_call.completed"
 
 	// ─────────────────────────────────────────────────────────────
 	// File search events
@@ -127,15 +142,15 @@ const (
 
 	// FileSearchCallInProgress indicates a file search tool
 	// invocation has started.
-	FileSearchCallInProgress EventType = "response.file_search_call_in_progress"
+	FileSearchCallInProgress EventType = "response.file_search_call.in_progress"
 
 	// FileSearchCallSearching indicates that file search
 	// is actively querying sources.
-	FileSearchCallSearching EventType = "response.file_search_call_searching"
+	FileSearchCallSearching EventType = "response.file_search_call.searching"
 
 	// FileSearchCallCompleted indicates the file search
 	// tool has completed.
-	FileSearchCallCompleted EventType = "response.file_search_call_completed"
+	FileSearchCallCompleted EventType = "response.file_search_call.completed"
 
 	// ─────────────────────────────────────────────────────────────
 	// Refusal & error events
@@ -159,17 +174,51 @@ Only a subset of fields will be populated depending on the event `Type`.
 
 Field semantics:
   - Type: The event type identifier (always present)
+  - SequenceNumber: The sequence number of this event, used to order streaming events.
+  - ResponseID: The response id that this event relates to.
+  - OutputIndex: The output array index.
+  - ItemID: The output item id.
+  - ContentIndex: The content part index within an output item.
+  - AnnotationIndex: The annotation index within a content part.
   - Delta: Incremental text or JSON fragment
-  - Text: Full text payload (non-streamed events)
-  - Code: Code being executed (code interpreter events)
+  - Text: Final text payload for *.done events
+  - Refusal: Final refusal payload for refusal *.done events
+  - Name / Arguments: Function/tool call name and arguments (function calling)
+  - Code: Code snippet (code interpreter) OR error code (error events)
   - Message: Error or informational message
+  - Item: Structured output item payload (output_item.* events)
+  - Response: Full response payload (response.* lifecycle events)
+  - Annotation: Annotation payload (output_text.annotation.added)
 */
 type StreamEvent struct {
-	Type    EventType `json:"type"`
-	Delta   string    `json:"delta,omitempty"`
-	Text    string    `json:"text,omitempty"`
-	Code    string    `json:"code,omitempty"`
-	Message string    `json:"message,omitempty"`
+	Type EventType `json:"type"`
+
+	// Common stream metadata
+	SequenceNumber  int    `json:"sequence_number,omitempty"`
+	ResponseID      string `json:"response_id,omitempty"`
+	OutputIndex     int    `json:"output_index,omitempty"`
+	ItemID          string `json:"item_id,omitempty"`
+	ContentIndex    int    `json:"content_index,omitempty"`
+	AnnotationIndex int    `json:"annotation_index,omitempty"`
+
+	// Deltas / finalized payloads
+	Delta   string `json:"delta,omitempty"`
+	Text    string `json:"text,omitempty"`
+	Refusal string `json:"refusal,omitempty"`
+
+	// Function calling payload
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
+
+	// Code interpreter / error payload
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
+	Param   any    `json:"param,omitempty"`
+
+	// Structured payloads
+	Item       json.RawMessage `json:"item,omitempty"`
+	Response   json.RawMessage `json:"response,omitempty"`
+	Annotation json.RawMessage `json:"annotation,omitempty"`
 }
 
 /*

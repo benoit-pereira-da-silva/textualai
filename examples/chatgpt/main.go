@@ -37,7 +37,7 @@ func main() {
 	)
 	flag.Parse()
 
-	cfg := textualopenai.NewConfig(*baseURLFlag, textualopenai.Model(*modelFlag))
+	cfg, _ := textualopenai.NewConfig(*baseURLFlag, textualopenai.Model(*modelFlag))
 	client := textualopenai.NewClient(cfg, context.Background())
 
 	// Ctrl-C cancellation.

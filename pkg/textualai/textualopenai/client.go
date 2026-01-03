@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/benoit-pereira-da-silva/textual/pkg/textual"
+	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai"
 )
 
 // Client defines a textual client for OpenAI's platform
@@ -38,7 +39,7 @@ func (c Client) Config() Config {
 
 // Stream opens a streaming connection to the Responses endpoint and returns the raw HTTP response.
 // Callers must close resp.Body.
-func (c Client) Stream(r Requestable) (*http.Response, error) {
+func (c Client) Stream(r textualai.Requestable) (*http.Response, error) {
 	if err := c.ensureConfig(); err != nil {
 		return nil, err
 	}
