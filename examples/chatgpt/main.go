@@ -33,10 +33,11 @@ func main() {
 		instructionsFlag     = flag.String("instructions", "", "Optional assistant instructions (system prompt)")
 		nonInteractivePrompt = flag.String("prompt", "", "If set, runs a single request and exits (otherwise starts a tiny REPL)")
 		thinking             = flag.Bool("thinking", false, "If set, thinking event that separates their reasoning trace from the final answer")
+		displayHeaderInfos   = flag.Bool("display-header-infos", false, "Display header infos")
 	)
 	flag.Parse()
 
-	cfg := textualopenai.NewConfig(*baseURLFlag, textualopenai.Model(*modelFlag)).WithExposeHeaderInfos()
+	cfg := textualopenai.NewConfig(*baseURLFlag, textualopenai.Model(*modelFlag))
 	client := textualopenai.NewClient(cfg, context.Background())
 
 	// Ctrl-C cancellation.
@@ -45,7 +46,7 @@ func main() {
 
 	// One-shot mode.
 	if strings.TrimSpace(*nonInteractivePrompt) != "" {
-		if err := runOnce(ctx, client, *modelFlag, *maxOutputTokensFlag, *instructionsFlag, *thinking, *nonInteractivePrompt); err != nil {
+		if err := runOnce(ctx, client, *modelFlag, *maxOutputTokensFlag, *instructionsFlag, *thinking, *nonInteractivePrompt, *displayHeaderInfos); err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -53,17 +54,17 @@ func main() {
 	}
 	// If no -prompt was provided but args exist, treat them as a one-shot prompt.
 	if argPrompt := strings.TrimSpace(strings.Join(flag.Args(), " ")); argPrompt != "" {
-		if err := runOnce(ctx, client, *modelFlag, *maxOutputTokensFlag, *instructionsFlag, *thinking, argPrompt); err != nil {
+		if err := runOnce(ctx, client, *modelFlag, *maxOutputTokensFlag, *instructionsFlag, *thinking, argPrompt, *displayHeaderInfos); err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
 		return
 	}
-	runRepl(ctx, client, *modelFlag, *maxOutputTokensFlag, *instructionsFlag, *thinking)
+	runRepl(ctx, client, *modelFlag, *maxOutputTokensFlag, *instructionsFlag, *thinking, *displayHeaderInfos)
 }
 
 // runRepl is a Minimal REP that keeps conversation history in memory.
-func runRepl(ctx context.Context, client textualopenai.Client, model string, maxOutputTokens int, instructions string, thinking bool) {
+func runRepl(ctx context.Context, client textualopenai.Client, model string, maxOutputTokens int, instructions string, thinking bool, displayHeaders bool) {
 	_, _ = fmt.Fprintln(os.Stderr, "Enter a prompt and press Enter (Ctrl-D to quit, Ctrl-C to interrupt).")
 	scanner := bufio.NewScanner(os.Stdin)
 	history := make([]InputItem, 0, 16)
@@ -101,7 +102,7 @@ func runRepl(ctx context.Context, client textualopenai.Client, model string, max
 			_, _ = fmt.Fprintln(os.Stderr, "\nerror:", err)
 			continue
 		}
-		if client.Config().ExposeHeaderInfos() {
+		if displayHeaders {
 			_, _ = fmt.Fprintln(os.Stdout, "\n", headerInfos.ToString())
 		}
 		_, _ = fmt.Fprint(os.Stdout, "\n")
@@ -110,7 +111,7 @@ func runRepl(ctx context.Context, client textualopenai.Client, model string, max
 }
 
 // runOnce just runs the request once.
-func runOnce(ctx context.Context, client textualopenai.Client, model string, maxOutputTokens int, instructions string, thinking bool, prompt string) error {
+func runOnce(ctx context.Context, client textualopenai.Client, model string, maxOutputTokens int, instructions string, thinking bool, prompt string, displayHeaders bool) error {
 	history := []InputItem{{Role: "user", Content: prompt}}
 	// Build the request and add the Listeners.
 	req, err := buildRequest(ctx, textualopenai.Model(model), maxOutputTokens, instructions, thinking, history)
@@ -118,7 +119,7 @@ func runOnce(ctx context.Context, client textualopenai.Client, model string, max
 		return err
 	}
 	_, headerInfos, stErr := client.StreamAndTranscode(ctx, req)
-	if client.Config().ExposeHeaderInfos() {
+	if displayHeaders {
 		_, _ = fmt.Fprintln(os.Stdout, "\n", headerInfos.ToString())
 	}
 	return stErr

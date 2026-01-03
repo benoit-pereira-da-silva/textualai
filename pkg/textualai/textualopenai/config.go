@@ -12,10 +12,9 @@ const (
 )
 
 type Config struct {
-	apiKey            string
-	baseURL           string
-	model             Model
-	exposeHeaderInfos bool
+	apiKey  string
+	baseURL string
+	model   Model
 }
 
 func NewConfig(baseURL string, model Model) Config {
@@ -42,14 +41,4 @@ func NewConfig(baseURL string, model Model) Config {
 func (c Config) WithApiKey(apiKey string) Config {
 	c.apiKey = apiKey
 	return c
-}
-
-// WithExposeHeaderInfos enables the exposure of HTTP header information in the Client and returns a modified copy of the Client.
-func (c Config) WithExposeHeaderInfos() Config {
-	c.exposeHeaderInfos = true
-	return c
-}
-
-func (c Config) ExposeHeaderInfos() bool {
-	return c.exposeHeaderInfos
 }
