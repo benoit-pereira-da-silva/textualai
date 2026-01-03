@@ -32,6 +32,10 @@ func NewClient(config Config, ctx context.Context) Client {
 	}
 }
 
+func (c Client) Config() Config {
+	return c.config
+}
+
 // Stream opens a streaming connection to the Responses endpoint and returns the raw HTTP response.
 // Callers must close resp.Body.
 func (c Client) Stream(r Requestable) (*http.Response, error) {
@@ -79,10 +83,11 @@ func (c Client) Stream(r Requestable) (*http.Response, error) {
 	return resp, nil
 }
 
-func (c Client) StreamAndTranscode(ctx context.Context, req *ResponsesRequest) (string, error) {
+func (c Client) StreamAndTranscode(ctx context.Context, req *ResponsesRequest) (string, HeaderInfos, error) {
 	resp, err := c.Stream(req)
+	headerInfos := HeaderInfosFromHTTPResponse(resp)
 	if err != nil {
-		return "", err
+		return "", headerInfos, err
 	}
 	defer func() {
 		req.RemoveListeners()
@@ -102,15 +107,15 @@ func (c Client) StreamAndTranscode(ctx context.Context, req *ResponsesRequest) (
 		select {
 		case <-ctx.Done():
 			if errors.Is(ctx.Err(), context.Canceled) {
-				return "", ctx.Err()
+				return "", headerInfos, ctx.Err()
 			}
-			return b.String(), ctx.Err()
+			return b.String(), headerInfos, ctx.Err()
 
 		case item, ok := <-outCh:
 			b.WriteString(item.Value)
 			if !ok {
 				// Return the accumulated string
-				return b.String(), nil // stream finished normally
+				return b.String(), headerInfos, nil // stream finished normally
 			}
 		}
 	}

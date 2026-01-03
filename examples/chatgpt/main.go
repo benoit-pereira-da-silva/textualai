@@ -36,7 +36,7 @@ func main() {
 	)
 	flag.Parse()
 
-	cfg := textualopenai.NewConfig("", *baseURLFlag, textualopenai.Model(*modelFlag))
+	cfg := textualopenai.NewConfig(*baseURLFlag, textualopenai.Model(*modelFlag)).WithExposeHeaderInfos()
 	client := textualopenai.NewClient(cfg, context.Background())
 
 	// Ctrl-C cancellation.
@@ -96,10 +96,13 @@ func runRepl(ctx context.Context, client textualopenai.Client, model string, max
 			return
 		}
 		// Stream assistant response and append it to history.
-		assistantText, err := client.StreamAndTranscode(ctx, req)
+		assistantText, headerInfos, err := client.StreamAndTranscode(ctx, req)
 		if err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, "\nerror:", err)
 			continue
+		}
+		if client.Config().ExposeHeaderInfos() {
+			_, _ = fmt.Fprintln(os.Stdout, "\n", headerInfos.ToString())
 		}
 		_, _ = fmt.Fprint(os.Stdout, "\n")
 		history = append(history, InputItem{Role: "assistant", Content: assistantText})
@@ -114,11 +117,11 @@ func runOnce(ctx context.Context, client textualopenai.Client, model string, max
 	if err != nil {
 		return err
 	}
-	_, err = client.StreamAndTranscode(ctx, req)
-	if err != nil {
-		return err
+	_, headerInfos, stErr := client.StreamAndTranscode(ctx, req)
+	if client.Config().ExposeHeaderInfos() {
+		_, _ = fmt.Fprintln(os.Stdout, "\n", headerInfos.ToString())
 	}
-	return nil
+	return stErr
 }
 
 // buildRequest creates and configures a textualopenai.ResponsesRequest with input data,
@@ -126,16 +129,11 @@ func runOnce(ctx context.Context, client textualopenai.Client, model string, max
 // request or an error if listener addition fails.
 func buildRequest(ctx context.Context, model textualopenai.Model, maxOutputTokens int, instructions string, thinking bool, history []InputItem) (*textualopenai.ResponsesRequest, error) {
 
-	req := textualopenai.NewResponsesRequest(ctx, textual.ScanJSON, model)
+	req := textualopenai.NewResponsesRequest(ctx, model)
 	req.Input = history
 	req.Thinking = thinking
-	if instructions != "" {
-		req.Instructions = instructions
-	}
-	if maxOutputTokens > 0 {
-		mot := maxOutputTokens
-		req.MaxOutputTokens = &mot
-	}
+	req.Instructions = instructions
+	req.MaxOutputTokens = maxOutputTokens
 
 	// Add listener for the event we wanna stream including error cases
 	listErr := req.AddListeners(func(c textual.JsonGenericCarrier[textualopenai.StreamEvent]) textual.StringCarrier {

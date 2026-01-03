@@ -12,20 +12,18 @@ const (
 )
 
 type Config struct {
-	apiKey  string
-	baseURL string
-	model   Model
+	apiKey            string
+	baseURL           string
+	model             Model
+	exposeHeaderInfos bool
 }
 
-func NewConfig(apiKey string, baseURL string, model Model) Config {
+func NewConfig(baseURL string, model Model) Config {
 	config := Config{
-		apiKey:  apiKey,
 		baseURL: baseURL,
 		model:   model,
 	}
-	if config.apiKey == "" {
-		config.apiKey = os.Getenv("OPENAI_API_KEY")
-	}
+	config.apiKey = os.Getenv("OPENAI_API_KEY")
 	if config.baseURL == "" {
 		config.baseURL = os.Getenv("OPENAI_API_URL")
 		if config.baseURL == "" {
@@ -39,4 +37,19 @@ func NewConfig(apiKey string, baseURL string, model Model) Config {
 		}
 	}
 	return config
+}
+
+func (c Config) WithApiKey(apiKey string) Config {
+	c.apiKey = apiKey
+	return c
+}
+
+// WithExposeHeaderInfos enables the exposure of HTTP header information in the Client and returns a modified copy of the Client.
+func (c Config) WithExposeHeaderInfos() Config {
+	c.exposeHeaderInfos = true
+	return c
+}
+
+func (c Config) ExposeHeaderInfos() bool {
+	return c.exposeHeaderInfos
 }

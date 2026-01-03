@@ -29,7 +29,7 @@ type ResponsesRequest struct {
 	Instructions string `json:"instructions,omitempty"`
 
 	// Limit the output
-	MaxOutputTokens *int `json:"max_output_tokens,omitempty"`
+	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
 
 	// If set to true when using a reasoning model, we get intermediary thinking summaries.
 	Thinking bool `json:"thinking,omitempty"`
@@ -44,14 +44,14 @@ type ResponsesRequest struct {
 	observers map[StreamEventType]func(e textual.JsonGenericCarrier[StreamEvent])
 }
 
-func NewResponsesRequest(ctx context.Context, f bufio.SplitFunc, model Model) *ResponsesRequest {
+func NewResponsesRequest(ctx context.Context, model Model) *ResponsesRequest {
 	return &ResponsesRequest{
 		ctx:             ctx,
-		splitFunc:       f,
+		splitFunc:       textual.ScanJSON,
 		Model:           model,
 		Input:           nil,
 		Stream:          true,
-		MaxOutputTokens: nil,
+		MaxOutputTokens: 0,
 		Thinking:        false,
 		listeners:       make(map[StreamEventType]func(e textual.JsonGenericCarrier[StreamEvent]) textual.StringCarrier),
 		observers:       make(map[StreamEventType]func(e textual.JsonGenericCarrier[StreamEvent])),
