@@ -15,7 +15,7 @@ import (
 // using RFC3339 by default (Go's standard library behavior). ProcessingTime
 // is serialized as milliseconds to match the header semantics.
 type HeaderInfos struct {
-	// API Meta Information
+	// API Meta-Information
 	Organization   string        `json:"organization,omitempty"`       // openai-organization
 	ProcessingTime time.Duration `json:"processing_time_ms,omitempty"` // openai-processing-ms (milliseconds in header; encoded as ms in JSON)
 	APIVersion     string        `json:"api_version,omitempty"`        // openai-version
