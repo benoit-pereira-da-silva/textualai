@@ -40,8 +40,8 @@ type ResponsesRequest struct {
 
 	// Listeners
 	mu        sync.Mutex
-	listeners map[StreamEventType]func(e textual.JsonGenericCarrier[StreamEvent]) textual.StringCarrier
-	observers map[StreamEventType]func(e textual.JsonGenericCarrier[StreamEvent])
+	listeners map[EventType]func(e textual.JsonGenericCarrier[StreamEvent]) textual.StringCarrier
+	observers map[EventType]func(e textual.JsonGenericCarrier[StreamEvent])
 }
 
 func NewResponsesRequest(ctx context.Context, model Model) *ResponsesRequest {
@@ -53,8 +53,8 @@ func NewResponsesRequest(ctx context.Context, model Model) *ResponsesRequest {
 		Stream:          true,
 		MaxOutputTokens: 0,
 		Thinking:        false,
-		listeners:       make(map[StreamEventType]func(e textual.JsonGenericCarrier[StreamEvent]) textual.StringCarrier),
-		observers:       make(map[StreamEventType]func(e textual.JsonGenericCarrier[StreamEvent])),
+		listeners:       make(map[EventType]func(e textual.JsonGenericCarrier[StreamEvent]) textual.StringCarrier),
+		observers:       make(map[EventType]func(e textual.JsonGenericCarrier[StreamEvent])),
 	}
 }
 func (r *ResponsesRequest) Context() context.Context {
@@ -91,7 +91,7 @@ func (r *ResponsesRequest) SplitFunc() bufio.SplitFunc {
 	return r.splitFunc
 }
 
-func (r *ResponsesRequest) AddListeners(f func(e textual.JsonGenericCarrier[StreamEvent]) textual.StringCarrier, et ...StreamEventType) error {
+func (r *ResponsesRequest) AddListeners(f func(e textual.JsonGenericCarrier[StreamEvent]) textual.StringCarrier, et ...EventType) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, t := range et {
@@ -103,7 +103,7 @@ func (r *ResponsesRequest) AddListeners(f func(e textual.JsonGenericCarrier[Stre
 	return nil
 }
 
-func (r *ResponsesRequest) RemoveListener(et StreamEventType) error {
+func (r *ResponsesRequest) RemoveListener(et EventType) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, ok := r.listeners[et]; ok {
@@ -121,7 +121,7 @@ func (r *ResponsesRequest) RemoveListeners() {
 	}
 }
 
-func (r *ResponsesRequest) AddObservers(f func(e textual.JsonGenericCarrier[StreamEvent]), et ...StreamEventType) error {
+func (r *ResponsesRequest) AddObservers(f func(e textual.JsonGenericCarrier[StreamEvent]), et ...EventType) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, eventName := range et {
@@ -133,7 +133,7 @@ func (r *ResponsesRequest) AddObservers(f func(e textual.JsonGenericCarrier[Stre
 	return nil
 }
 
-func (r *ResponsesRequest) RemoveObserver(et StreamEventType) error {
+func (r *ResponsesRequest) RemoveObserver(et EventType) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, ok := r.observers[et]; ok {
