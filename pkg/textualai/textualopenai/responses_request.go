@@ -14,6 +14,18 @@ import (
 	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai"
 )
 
+// InputItem is the minimal "message-like" shape used in the Responses `input` array.
+//
+// In the API, `content` can be:
+//   - a plain string, OR
+//   - a structured list of content parts.
+//
+// We keep it as `any` so callers can provide either representation.
+type InputItem struct {
+	Role    string `json:"role,omitempty"`
+	Content any    `json:"content,omitempty"`
+}
+
 // ResponsesRequest
 // https://platform.openai.com/docs/api-reference/responses
 type ResponsesRequest struct {
