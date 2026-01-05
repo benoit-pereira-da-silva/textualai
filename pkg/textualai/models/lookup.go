@@ -14,67 +14,46 @@
 
 package models
 
-import "strings"
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
+
+func ModelFromString(s string) (Model, error) {
+	ms := ModelString(s)
+	prv, mid, err := ms.Split()
+	if err != nil {
+		return nil, err
+	}
+	return Resolve(prv, mid)
+}
 
 // Resolve returns the best-effort Model metadata for (provider, id).
 //
 // It uses curated lists when possible, and falls back to UniversalModel when unknown.
-func Resolve(provider ProviderName, id ModelID) Model {
+func Resolve(provider ProviderName, id ModelID) (Model, error) {
 	p := provider
 	if strings.TrimSpace(string(p)) == "" {
-		p = ProviderOpenAI
+		return OpenAIModel{}, errors.New("provider name is empty")
 	}
-
+	if strings.TrimSpace(string(id)) == "" {
+		return OpenAIModel{}, errors.New("model identifier is empty")
+	}
 	mid := ModelID(strings.TrimSpace(string(id)))
-	if strings.TrimSpace(string(mid)) == "" {
-		// Return a zero-ish UniversalModel to avoid nil interface surprises.
-		return UniversalModel{
-			Provider:    p,
-			ID:          "",
-			Name:        "",
-			Flavour:     "",
-			Tags:        nil,
-			Description: "",
-		}
-	}
-
 	switch p {
 	case ProviderOpenAI:
 		if m, ok := LookupOpenAIModel(mid); ok {
-			return m
+			return m, nil
 		}
-		return UniversalModel{
-			Provider:    p,
-			ID:          mid,
-			Name:        string(mid),
-			Flavour:     "",
-			Tags:        nil,
-			Description: "",
-		}
-
+		return OpenAIModel{}, fmt.Errorf("openai model not found %s", mid)
 	case ProviderOllama:
 		if m, ok := LookupOllamaModel(mid); ok {
-			return m
+			return m, nil
 		}
-		return UniversalModel{
-			Provider:    p,
-			ID:          mid,
-			Name:        string(mid),
-			Flavour:     "",
-			Tags:        nil,
-			Description: "",
-		}
-
+		return OpenAIModel{}, fmt.Errorf("ollama model not found %s", mid)
 	default:
-		// Unknown provider: return minimal metadata.
-		return UniversalModel{
-			Provider:    p,
-			ID:          mid,
-			Name:        string(mid),
-			Flavour:     "",
-			Tags:        nil,
-			Description: "",
-		}
+		return OpenAIModel{}, errors.New("provider name is invalid")
 	}
 }
 

@@ -32,14 +32,11 @@ import (
 )
 
 type sessionOptions struct {
-	Model               textualopenai.Model
-	Provider            models.ProviderName
-	MaxOutputTokens     int
-	Instructions        string
-	Thinking            bool
-	DisplayHeaderInfos  bool
-	EnableTools         bool
-	StrictFunctionTools bool
+	Model              models.Model
+	MaxOutputTokens    int
+	Instructions       string
+	Thinking           bool
+	DisplayHeaderInfos bool
 }
 
 func main() {
@@ -54,62 +51,28 @@ func main() {
 	)
 	flag.Parse()
 
-	// Resolve model descriptor (flag > env > default).
-	rawModel := resolveModelDescriptor(*modelFlag)
+	// Resolve model string name descriptor (flag > env > default).
+	rawModel := resolveModel(*modelFlag)
 
-	ms, err := models.FromModelString(rawModel)
-	if err != nil {
-		log.Fatal(err)
-	}
-	provider, modelID, err := ms.Split()
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// Resolve model metadata (best-effort). This is used to gate tools + thinking.
-	modelMeta, err := ms.Model()
+	// Resolve model (best-effort).
+	model, err := models.ModelFromString(rawModel)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	// Thinking compatibility gate: if thinking is explicitly requested, refuse early
 	// for non-reasoning models (so users don't get confusing API errors).
-	if *thinking && (modelMeta == nil || !modelMeta.SupportsThinking()) {
-		log.Fatalf("termchat: -thinking requested but model %q does not advertise reasoning/thinking support", ms.String())
+	if *thinking && (model == nil || !model.SupportsThinking()) {
+		log.Fatalf("termchat: -thinking requested but model %q does not advertise reasoning/thinking support", model.DisplayName())
 	}
 
-	// Resolve base URL (flag > env > provider default).
-	baseURL := resolveBaseURL(*baseURLFlag, provider)
-
-	cfg, err := textualopenai.NewConfig(baseURL, textualopenai.Model(modelID))
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// Apply provider policy for API keys.
-	// The underlying client is OpenAI-compatible (key optional), but OpenAI itself requires it.
-	if pinfo, ok := models.Provider(provider); ok {
-		cfg = cfg.WithAPIKeyRequired(pinfo.APIKeyRequired)
-		if pinfo.APIKeyRequired && !cfg.HasAPIKey() {
-			log.Fatalf("termchat: provider %q requires an API key; set OPENAI_API_KEY (or pass it via Config.WithApiKey)", provider)
-		}
-	}
-
-	client := textualopenai.NewClient(cfg, context.Background())
-
+	client, err := textualopenai.ClientFrom(*baseURLFlag, model, context.Background())
 	opts := sessionOptions{
-		Model:              cfg.Model(),
-		Provider:           provider,
+		Model:              model,
 		MaxOutputTokens:    *maxOutputTokensFlag,
 		Instructions:       *instructionsFlag,
 		Thinking:           *thinking,
 		DisplayHeaderInfos: *displayHeaderInfos,
-		EnableTools:        modelMeta != nil && modelMeta.SupportsTools(),
-	}
-
-	// Strict function tools are currently enabled only when the provider explicitly supports it.
-	if pinfo, ok := models.Provider(provider); ok {
-		opts.StrictFunctionTools = pinfo.SupportsStrictFunctionTools
 	}
 
 	// Ctrl-C cancellation.
@@ -137,7 +100,7 @@ func main() {
 	runRepl(ctx, client, opts)
 }
 
-func resolveModelDescriptor(modelFlag string) string {
+func resolveModel(modelFlag string) string {
 	if v := strings.TrimSpace(modelFlag); v != "" {
 		return v
 	}
@@ -147,24 +110,7 @@ func resolveModelDescriptor(modelFlag string) string {
 	if v := strings.TrimSpace(os.Getenv("OPENAI_MODEL")); v != "" {
 		return v
 	}
-	// Explicit default (provider-qualified).
-	return "openai:" + string(textualopenai.ModelGpt41)
-}
-
-func resolveBaseURL(flagValue string, provider models.ProviderName) string {
-	if v := strings.TrimSpace(flagValue); v != "" {
-		return v
-	}
-	if v := strings.TrimSpace(os.Getenv("TERMCHAT_API_URL")); v != "" {
-		return v
-	}
-	if v := strings.TrimSpace(os.Getenv("TEXTUALAI_API_URL")); v != "" {
-		return v
-	}
-	if pinfo, ok := models.Provider(provider); ok && strings.TrimSpace(pinfo.DefaultBaseURL) != "" {
-		return pinfo.DefaultBaseURL
-	}
-	return textualopenai.DefaultApiUrl
+	return ""
 }
 
 // runRepl is a Minimal REP that keeps conversation history in memory.
@@ -179,7 +125,6 @@ func runRepl(ctx context.Context, client textualopenai.Client, opts sessionOptio
 			return
 		default:
 		}
-
 		_, _ = fmt.Fprint(os.Stderr, "> ")
 		if !scanner.Scan() {
 			// EOF or error.
@@ -350,7 +295,7 @@ func extractResponseIDFromCreatedEvent(ev textualopenai.StreamEvent) string {
 
 // registerTools wires custom functions into the Responses API request via function tools.
 func registerTools(req *textualopenai.ResponsesRequest, opts sessionOptions) error {
-	if !opts.EnableTools {
+	if !opts.Model.SupportsTools() {
 		return nil
 	}
 
@@ -368,7 +313,7 @@ func registerTools(req *textualopenai.ResponsesRequest, opts sessionOptions) err
 	}
 
 	// Strict mode is only enabled when supported by the selected provider.
-	if opts.StrictFunctionTools {
+	if opts.Model.ProviderInfo().SupportsStrictFunctionTools {
 		return req.RegisterFunctionToolStrict(
 			"get_time",
 			"Get the current date and time in a given IANA time zone database name.",

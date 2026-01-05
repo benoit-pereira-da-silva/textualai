@@ -48,9 +48,7 @@ func SearchProvider(provider ProviderName, query string) []Model {
 	if q == "" {
 		return nil
 	}
-
 	var results []Model
-
 	switch provider {
 	case ProviderOpenAI:
 		for _, m := range AllOpenAIModels.All {
@@ -76,8 +74,8 @@ func modelMatches(m Model, q string) bool {
 	if m == nil {
 		return false
 	}
-
-	if strings.Contains(strings.ToLower(string(m.ProviderName())), q) {
+	pi := m.ProviderInfo()
+	if strings.Contains(strings.ToLower(string(pi.Name)), q) {
 		return true
 	}
 	if strings.Contains(strings.ToLower(strings.TrimSpace(m.DisplayName())), q) {

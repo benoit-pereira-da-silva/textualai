@@ -19,17 +19,16 @@ import "strings"
 // Compile-time check: OpenAIModel implements Model.
 var _ Model = OpenAIModel{}
 
-func (m OpenAIModel) ProviderName() ProviderName { return ProviderOpenAI }
-
-func (m OpenAIModel) Identifier() ModelID      { return m.ID }
-func (m OpenAIModel) DisplayName() string      { return m.Name }
-func (m OpenAIModel) Kind() string             { return m.Flavour }
-func (m OpenAIModel) TagList() []Tag           { return m.Tags }
-func (m OpenAIModel) Summary() string          { return m.Description }
-func (m OpenAIModel) KnownSnapshots() []string { return m.Snapshots }
-func (m OpenAIModel) IsDeprecated() bool       { return m.Deprecated }
-func (m OpenAIModel) KnownSizes() []string     { return nil }
-func (m OpenAIModel) LicenseText() string      { return "" }
+func (m OpenAIModel) ProviderInfo() ProviderInfo { p, _ := Providers[ProviderOpenAI]; return p }
+func (m OpenAIModel) Identifier() ModelID        { return m.ID }
+func (m OpenAIModel) DisplayName() string        { return m.Name }
+func (m OpenAIModel) Kind() string               { return m.Flavour }
+func (m OpenAIModel) TagList() []Tag             { return m.Tags }
+func (m OpenAIModel) Summary() string            { return m.Description }
+func (m OpenAIModel) KnownSnapshots() []string   { return m.Snapshots }
+func (m OpenAIModel) IsDeprecated() bool         { return m.Deprecated }
+func (m OpenAIModel) KnownSizes() []string       { return nil }
+func (m OpenAIModel) LicenseText() string        { return "" }
 
 func (m OpenAIModel) SupportsTools() bool     { return supportsTools(m.Tags) }
 func (m OpenAIModel) SupportsThinking() bool  { return supportsThinking(m.Flavour, m.Tags) }

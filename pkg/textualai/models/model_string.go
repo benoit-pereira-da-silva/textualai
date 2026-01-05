@@ -39,9 +39,7 @@ func FromModelString(s string) (ModelString, error) {
 		// Canonicalize provider casing.
 		return ModelString(string(p) + ":" + strings.TrimSpace(id)), nil
 	}
-
-	// No provider prefix (or unknown prefix): keep as-is.
-	return ModelString(raw), nil
+	return "", fmt.Errorf("models: invalid model string: %q", raw)
 }
 
 // Validate checks whether the ModelString is structurally valid.
@@ -134,7 +132,7 @@ func (s ModelString) Model() (Model, error) {
 	if err != nil {
 		return nil, err
 	}
-	return Resolve(p, id), nil
+	return Resolve(p, id)
 }
 
 // splitExplicitProvider returns (provider, remainder, true) when s starts with a known

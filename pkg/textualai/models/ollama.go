@@ -19,17 +19,16 @@ import "strings"
 // Compile-time check: OllamaModel implements Model.
 var _ Model = OllamaModel{}
 
-func (m OllamaModel) ProviderName() ProviderName { return ProviderOllama }
-
-func (m OllamaModel) Identifier() ModelID      { return m.ID }
-func (m OllamaModel) DisplayName() string      { return m.Name }
-func (m OllamaModel) Kind() string             { return m.Flavour }
-func (m OllamaModel) TagList() []Tag           { return m.Tags }
-func (m OllamaModel) Summary() string          { return m.Description }
-func (m OllamaModel) KnownSnapshots() []string { return nil }
-func (m OllamaModel) IsDeprecated() bool       { return false }
-func (m OllamaModel) KnownSizes() []string     { return m.Sizes }
-func (m OllamaModel) LicenseText() string      { return m.License }
+func (m OllamaModel) ProviderInfo() ProviderInfo { p, _ := Providers[ProviderOllama]; return p }
+func (m OllamaModel) Identifier() ModelID        { return m.ID }
+func (m OllamaModel) DisplayName() string        { return m.Name }
+func (m OllamaModel) Kind() string               { return m.Flavour }
+func (m OllamaModel) TagList() []Tag             { return m.Tags }
+func (m OllamaModel) Summary() string            { return m.Description }
+func (m OllamaModel) KnownSnapshots() []string   { return nil }
+func (m OllamaModel) IsDeprecated() bool         { return false }
+func (m OllamaModel) KnownSizes() []string       { return m.Sizes }
+func (m OllamaModel) LicenseText() string        { return m.License }
 
 func (m OllamaModel) SupportsTools() bool     { return supportsTools(m.Tags) }
 func (m OllamaModel) SupportsThinking() bool  { return supportsThinking(m.Flavour, m.Tags) }

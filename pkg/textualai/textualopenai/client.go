@@ -22,47 +22,82 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"os"
 	"strings"
 
 	"github.com/benoit-pereira-da-silva/textual/pkg/textual"
+	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/models"
 )
 
 // Client defines a textual client for OpenAI-compatible /v1 endpoints.
 type Client struct {
-	config     Config
 	httpClient *http.Client
 	ctx        context.Context
+
+	apiKey         string
+	baseURL        string
+	model          models.Model
+	apiKeyRequired bool
 }
 
-func NewClient(config Config, ctx context.Context) Client {
+func ClientFrom(baseURL string, model models.Model, ctx context.Context) (Client, error) {
 	// NOTE: http.Client.Timeout covers the whole request lifetime (including reading resp.Body).
 	// For streaming requests, we rely on context cancellation instead, so Timeout is left to 0.
-	return Client{
-		config: config,
+	client := Client{
 		httpClient: &http.Client{
 			Timeout: 0,
 		},
 		ctx: ctx,
 	}
+	client.model = model
+	client.apiKey = strings.TrimSpace(firstNonEmpty(
+		os.Getenv("OPENAI_API_KEY"),
+		os.Getenv("TEXTUALAI_API_KEY"),
+	))
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
+		baseURL = model.ProviderInfo().DefaultBaseURL
+	}
+	validUrl, err := url.Parse(baseURL)
+	if err != nil {
+		return client, err
+	}
+	client.baseURL = validUrl.String()
+	if client.model.ProviderInfo().Name == models.ProviderOpenAI {
+		client.apiKeyRequired = true // Force the requirement
+	}
+	return client, nil
 }
 
-func (c Client) Config() Config {
-	return c.config
+func (c Client) WithApiKey(apiKey string) Client {
+	c.apiKey = strings.TrimSpace(apiKey)
+	return c
+}
+
+func (c Client) Model() models.Model {
+	return c.model
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // Stream opens a streaming connection to the Responses endpoint and returns the raw HTTP response.
 // Callers must close resp.Body.
 func (c Client) Stream(r Requestable) (*http.Response, error) {
-	if err := c.ensureConfig(); err != nil {
-		return nil, err
-	}
 	if r == nil {
 		return nil, errors.New("textualopenai: nil ResponsesRequest")
 	}
 	if r.Validate() != nil {
 		return nil, r.Validate()
 	}
-	endpoint, err := r.URL(c.config.baseURL)
+	endpoint, err := r.URL(c.baseURL)
 	if err != nil {
 		return nil, err
 	}
@@ -78,8 +113,8 @@ func (c Client) Stream(r Requestable) (*http.Response, error) {
 
 	// Authorization is optional for OpenAI-compatible providers (e.g. Ollama).
 	// When apiKeyRequired=true, ensureConfig() guarantees apiKey is present.
-	if strings.TrimSpace(c.config.apiKey) != "" {
-		req.Header.Set("Authorization", "Bearer "+c.config.apiKey)
+	if strings.TrimSpace(c.apiKey) != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -139,17 +174,4 @@ func (c Client) StreamAndTranscodeResponses(ctx context.Context, req *ResponsesR
 			}
 		}
 	}
-}
-
-func (c Client) ensureConfig() error {
-	if strings.TrimSpace(c.config.baseURL) == "" {
-		return errors.New("textualopenai: missing base URL (TEXTUALAI_API_URL / TERMCHAT_API_URL)")
-	}
-	if strings.TrimSpace(string(c.config.model)) == "" {
-		return errors.New("textualopenai: missing model (OPENAI_MODEL / TERMCHAT_MODEL)")
-	}
-	if c.config.apiKeyRequired && strings.TrimSpace(c.config.apiKey) == "" {
-		return errors.New("textualopenai: missing API key (OPENAI_API_KEY)")
-	}
-	return nil
 }

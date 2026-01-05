@@ -25,6 +25,7 @@ import (
 	"sync"
 
 	"github.com/benoit-pereira-da-silva/textual/pkg/textual"
+	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/models"
 )
 
 // InputItem is the minimal "message-like" shape used in the Responses `input` array.
@@ -54,10 +55,10 @@ type ResponsesRequest struct {
 	//  - This client currently streams only; Stream must be set to true.
 	//  - Tool/function calling is supported via the `tools`/`tool_choice` fields and the
 	//    built-in function delegate helpers (see function_delegate.go).
-	Model        Model  `json:"model,omitempty"`
-	Input        any    `json:"input,omitempty"`
-	Stream       bool   `json:"stream,omitempty"`
-	Instructions string `json:"instructions,omitempty"`
+	Model        models.ModelID `json:"model,omitempty"`
+	Input        any            `json:"input,omitempty"`
+	Stream       bool           `json:"stream,omitempty"`
+	Instructions string         `json:"instructions,omitempty"`
 
 	// ─────────────────────────────────────────────────────────────
 	// Output configuration
@@ -199,11 +200,11 @@ type outputItemEnvelope struct {
 	Arguments string `json:"arguments,omitempty"`
 }
 
-func NewResponsesRequest(ctx context.Context, model Model) *ResponsesRequest {
+func NewResponsesRequest(ctx context.Context, model models.Model) *ResponsesRequest {
 	return &ResponsesRequest{
 		ctx:             ctx,
 		splitFunc:       textual.ScanJSON,
-		Model:           model,
+		Model:           model.Identifier(),
 		Input:           nil,
 		Stream:          true,
 		MaxOutputTokens: 0,
@@ -231,9 +232,6 @@ func (r *ResponsesRequest) URL(baseURL string) (string, error) {
 }
 
 func (r *ResponsesRequest) Validate() error {
-	if r.Model == "" {
-		return errors.New("textualopenai: model is required")
-	}
 	if r.Stream == false {
 		return errors.New("textualopenai: streaming must be enabled")
 	}
