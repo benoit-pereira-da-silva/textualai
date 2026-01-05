@@ -104,7 +104,7 @@ func hasTag(tags []Tag, want Tag) bool {
 	return false
 }
 
-// stringSliceContains reports whether slice contains s (case-sensitive).
+// stringSliceContains reports whether a slice contains s (case-sensitive).
 func stringSliceContains(slice []string, s string) bool {
 	for _, v := range slice {
 		if v == s {

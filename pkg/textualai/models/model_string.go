@@ -114,7 +114,7 @@ func (s ModelString) ProviderInfo() (ProviderInfo, error) {
 	if err != nil {
 		return ProviderInfo{}, err
 	}
-	info, ok := Provider(p)
+	info, ok := p.ProviderInfo()
 	if !ok {
 		return ProviderInfo{}, fmt.Errorf("models: unknown provider: %q", p)
 	}
