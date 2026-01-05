@@ -1,3 +1,17 @@
+// Copyright 2026 Benoit Pereira da Silva
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package main
 
 import (
@@ -13,36 +27,90 @@ import (
 	"time"
 
 	"github.com/benoit-pereira-da-silva/textual/pkg/textual"
+	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/models"
 	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/textualopenai"
 )
 
+type sessionOptions struct {
+	Model               textualopenai.Model
+	Provider            models.ProviderName
+	MaxOutputTokens     int
+	Instructions        string
+	Thinking            bool
+	DisplayHeaderInfos  bool
+	EnableTools         bool
+	StrictFunctionTools bool
+}
+
 func main() {
 	var (
-		modelFlag            = flag.String("model", "", "model e.g. \"openai:gpt-4.1\" \"ollama:qwen3:32b\" (overrides TEXTUALAI_MODEL)")
-		baseURLFlag          = flag.String("base-url", "", "API base URL, e.g. https://api.openai.com/v1 or http://localhost:11434/v1 (overrides TEXTUALAI_API_URL)")
+		modelFlag            = flag.String("model", "", "model e.g. \"openai:gpt-4.1\" \"ollama:qwen3:32b\" (overrides TERMCHAT_MODEL)")
+		baseURLFlag          = flag.String("base-url", "", "API base URL, e.g. https://api.openai.com/v1 or http://localhost:11434/v1 (overrides TERMCHAT_API_URL)")
 		maxOutputTokensFlag  = flag.Int("max-output-tokens", 0, "Maximum output tokens (0 = omit)")
 		instructionsFlag     = flag.String("instructions", "", "Optional assistant instructions (system prompt)")
 		nonInteractivePrompt = flag.String("prompt", "", "If set, runs a single request and exits (otherwise starts a tiny REPL)")
-		thinking             = flag.Bool("thinking", false, "If set, thinking event that separates their reasoning trace from the final answer")
+		thinking             = flag.Bool("thinking", false, "If set, thinking mode is requested (only supported by reasoning models)")
 		displayHeaderInfos   = flag.Bool("display-header-infos", false, "Display header infos")
 	)
 	flag.Parse()
 
-	// Resolve the model the same way textualopenai.NewConfig does, so the CLI works
-	// when -model is omitted and OPENAI_MODEL is set (or absent).
-	resolvedModel := strings.TrimSpace(*modelFlag)
-	if resolvedModel == "" {
-		resolvedModel = strings.TrimSpace(os.Getenv("OPENAI_MODEL"))
-		if resolvedModel == "" {
-			resolvedModel = string(textualopenai.ModelGpt41)
-		}
-	}
+	// Resolve model descriptor (flag > env > default).
+	rawModel := resolveModelDescriptor(*modelFlag)
 
-	cfg, err := textualopenai.NewConfig(*baseURLFlag, textualopenai.Model(*modelFlag))
+	ms, err := models.FromModelString(rawModel)
 	if err != nil {
 		log.Fatal(err)
 	}
+	provider, modelID, err := ms.Split()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Resolve model metadata (best-effort). This is used to gate tools + thinking.
+	modelMeta, err := ms.Model()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Thinking compatibility gate: if thinking is explicitly requested, refuse early
+	// for non-reasoning models (so users don't get confusing API errors).
+	if *thinking && (modelMeta == nil || !modelMeta.SupportsThinking()) {
+		log.Fatalf("termchat: -thinking requested but model %q does not advertise reasoning/thinking support", ms.String())
+	}
+
+	// Resolve base URL (flag > env > provider default).
+	baseURL := resolveBaseURL(*baseURLFlag, provider)
+
+	cfg, err := textualopenai.NewConfig(baseURL, textualopenai.Model(modelID))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Apply provider policy for API keys.
+	// The underlying client is OpenAI-compatible (key optional), but OpenAI itself requires it.
+	if pinfo, ok := models.Provider(provider); ok {
+		cfg = cfg.WithAPIKeyRequired(pinfo.APIKeyRequired)
+		if pinfo.APIKeyRequired && !cfg.HasAPIKey() {
+			log.Fatalf("termchat: provider %q requires an API key; set OPENAI_API_KEY (or pass it via Config.WithApiKey)", provider)
+		}
+	}
+
 	client := textualopenai.NewClient(cfg, context.Background())
+
+	opts := sessionOptions{
+		Model:              cfg.Model(),
+		Provider:           provider,
+		MaxOutputTokens:    *maxOutputTokensFlag,
+		Instructions:       *instructionsFlag,
+		Thinking:           *thinking,
+		DisplayHeaderInfos: *displayHeaderInfos,
+		EnableTools:        modelMeta != nil && modelMeta.SupportsTools(),
+	}
+
+	// Strict function tools are currently enabled only when the provider explicitly supports it.
+	if pinfo, ok := models.Provider(provider); ok {
+		opts.StrictFunctionTools = pinfo.SupportsStrictFunctionTools
+	}
 
 	// Ctrl-C cancellation.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -50,25 +118,57 @@ func main() {
 
 	// One-shot mode.
 	if strings.TrimSpace(*nonInteractivePrompt) != "" {
-		if err := runOnce(ctx, client, resolvedModel, *maxOutputTokensFlag, *instructionsFlag, *thinking, *nonInteractivePrompt, *displayHeaderInfos); err != nil {
+		if err := runOnce(ctx, client, opts, *nonInteractivePrompt); err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
 		return
 	}
+
 	// If no -prompt was provided but args exist, treat them as a one-shot prompt.
 	if argPrompt := strings.TrimSpace(strings.Join(flag.Args(), " ")); argPrompt != "" {
-		if err := runOnce(ctx, client, resolvedModel, *maxOutputTokensFlag, *instructionsFlag, *thinking, argPrompt, *displayHeaderInfos); err != nil {
+		if err := runOnce(ctx, client, opts, argPrompt); err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
 		return
 	}
-	runRepl(ctx, client, resolvedModel, *maxOutputTokensFlag, *instructionsFlag, *thinking, *displayHeaderInfos)
+
+	runRepl(ctx, client, opts)
+}
+
+func resolveModelDescriptor(modelFlag string) string {
+	if v := strings.TrimSpace(modelFlag); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(os.Getenv("TERMCHAT_MODEL")); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(os.Getenv("OPENAI_MODEL")); v != "" {
+		return v
+	}
+	// Explicit default (provider-qualified).
+	return "openai:" + string(textualopenai.ModelGpt41)
+}
+
+func resolveBaseURL(flagValue string, provider models.ProviderName) string {
+	if v := strings.TrimSpace(flagValue); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(os.Getenv("TERMCHAT_API_URL")); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(os.Getenv("TEXTUALAI_API_URL")); v != "" {
+		return v
+	}
+	if pinfo, ok := models.Provider(provider); ok && strings.TrimSpace(pinfo.DefaultBaseURL) != "" {
+		return pinfo.DefaultBaseURL
+	}
+	return textualopenai.DefaultApiUrl
 }
 
 // runRepl is a Minimal REP that keeps conversation history in memory.
-func runRepl(ctx context.Context, client textualopenai.Client, model string, maxOutputTokens int, instructions string, thinking bool, displayHeaders bool) {
+func runRepl(ctx context.Context, client textualopenai.Client, opts sessionOptions) {
 	_, _ = fmt.Fprintln(os.Stderr, "Enter a prompt and press Enter (Ctrl-D to quit, Ctrl-C to interrupt).")
 	scanner := bufio.NewScanner(os.Stdin)
 	history := make([]textualopenai.InputItem, 0, 16)
@@ -97,7 +197,7 @@ func runRepl(ctx context.Context, client textualopenai.Client, model string, max
 		history = append(history, textualopenai.InputItem{Role: "user", Content: content})
 
 		// Stream assistant response (with tool loop) and append it to history.
-		assistantText, err := streamResponsesWithTools(ctx, client, textualopenai.Model(model), maxOutputTokens, instructions, thinking, history, displayHeaders)
+		assistantText, err := streamResponsesWithTools(ctx, client, opts, history)
 		if err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, "\nerror:", err)
 			continue
@@ -110,9 +210,9 @@ func runRepl(ctx context.Context, client textualopenai.Client, model string, max
 
 // runOnce just runs the request once (but will transparently perform extra API calls
 // if the model invokes tools and needs function_call_output round-trips).
-func runOnce(ctx context.Context, client textualopenai.Client, model string, maxOutputTokens int, instructions string, thinking bool, prompt string, displayHeaders bool) error {
+func runOnce(ctx context.Context, client textualopenai.Client, opts sessionOptions, prompt string) error {
 	input := []textualopenai.InputItem{{Role: "user", Content: prompt}}
-	_, err := streamResponsesWithTools(ctx, client, textualopenai.Model(model), maxOutputTokens, instructions, thinking, input, displayHeaders)
+	_, err := streamResponsesWithTools(ctx, client, opts, input)
 	return err
 }
 
@@ -122,7 +222,7 @@ func runOnce(ctx context.Context, client textualopenai.Client, model string, max
 //  2. executing registered handlers locally,
 //  3. calling the Responses API again with function_call_output items using previous_response_id,
 //  4. repeating until the model produces a response without new tool calls.
-func streamResponsesWithTools(ctx context.Context, client textualopenai.Client, model textualopenai.Model, maxOutputTokens int, instructions string, thinking bool, initialInput any, displayHeaders bool) (string, error) {
+func streamResponsesWithTools(ctx context.Context, client textualopenai.Client, opts sessionOptions, initialInput any) (string, error) {
 	var full strings.Builder
 
 	input := initialInput
@@ -130,13 +230,13 @@ func streamResponsesWithTools(ctx context.Context, client textualopenai.Client, 
 
 	for {
 		var responseID string
-		req, err := buildRequest(ctx, model, maxOutputTokens, instructions, thinking, input, previousResponseID, &responseID)
+		req, err := buildRequest(ctx, opts, input, previousResponseID, &responseID)
 		if err != nil {
 			return full.String(), err
 		}
 
 		assistantText, headerInfos, stErr := client.StreamAndTranscodeResponses(ctx, req)
-		if displayHeaders {
+		if opts.DisplayHeaderInfos {
 			_, _ = fmt.Fprintln(os.Stdout, "\n", headerInfos.ToString())
 		}
 		full.WriteString(assistantText)
@@ -165,24 +265,22 @@ func streamResponsesWithTools(ctx context.Context, client textualopenai.Client, 
 // configured request or an error if listener/observer/tool registration fails.
 func buildRequest(
 	ctx context.Context,
-	model textualopenai.Model,
-	maxOutputTokens int,
-	instructions string,
-	thinking bool,
+	opts sessionOptions,
 	input any,
 	previousResponseID string,
 	responseIDOut *string,
 ) (*textualopenai.ResponsesRequest, error) {
 
-	req := textualopenai.NewResponsesRequest(ctx, model)
+	req := textualopenai.NewResponsesRequest(ctx, opts.Model)
 	req.Input = input
-	req.Thinking = thinking
-	req.Instructions = instructions
-	req.MaxOutputTokens = maxOutputTokens
+	req.Thinking = opts.Thinking
+	req.Instructions = opts.Instructions
+	req.MaxOutputTokens = opts.MaxOutputTokens
 	req.PreviousResponseID = strings.TrimSpace(previousResponseID)
 
 	// Register custom function tools (function calling / tool calling).
-	if err := registerTools(req); err != nil {
+	// Only register tools when the model advertises tool support.
+	if err := registerTools(req, opts); err != nil {
 		return nil, err
 	}
 
@@ -251,7 +349,10 @@ func extractResponseIDFromCreatedEvent(ev textualopenai.StreamEvent) string {
 }
 
 // registerTools wires custom functions into the Responses API request via function tools.
-func registerTools(req *textualopenai.ResponsesRequest) error {
+func registerTools(req *textualopenai.ResponsesRequest, opts sessionOptions) error {
+	if !opts.EnableTools {
+		return nil
+	}
 
 	// JSON Schema for the get_time tool arguments.
 	schema := map[string]any{
@@ -266,40 +367,51 @@ func registerTools(req *textualopenai.ResponsesRequest) error {
 		"additionalProperties": false,
 	}
 
-	// Strict mode helps ensure args conform to the schema when supported by the model.
-	return req.RegisterFunctionToolStrict(
+	// Strict mode is only enabled when supported by the selected provider.
+	if opts.StrictFunctionTools {
+		return req.RegisterFunctionToolStrict(
+			"get_time",
+			"Get the current date and time in a given IANA time zone database name.",
+			schema,
+			true,
+			getTimeHandler,
+		)
+	}
+
+	return req.RegisterFunctionTool(
 		"get_time",
 		"Get the current date and time in a given IANA time zone database name.",
 		schema,
-		true,
-		func(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
-			// args example: {"location":"Europe/Paris"}
-			var payload struct {
-				Location string `json:"location"`
-			}
-			if len(args) == 0 {
-				args = json.RawMessage(`{}`)
-			}
-			if err := json.Unmarshal(args, &payload); err != nil {
-				return nil, err
-			}
-
-			dt, err := get_time(payload.Location)
-			if err != nil {
-				return nil, err
-			}
-
-			out := map[string]any{
-				"location": strings.TrimSpace(payload.Location),
-				"datetime": dt,
-			}
-			b, err := json.Marshal(out)
-			if err != nil {
-				return nil, err
-			}
-			return json.RawMessage(b), nil
-		},
+		getTimeHandler,
 	)
+}
+
+func getTimeHandler(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
+	// args example: {"location":"Europe/Paris"}
+	var payload struct {
+		Location string `json:"location"`
+	}
+	if len(args) == 0 {
+		args = json.RawMessage(`{}`)
+	}
+	if err := json.Unmarshal(args, &payload); err != nil {
+		return nil, err
+	}
+
+	dt, err := get_time(payload.Location)
+	if err != nil {
+		return nil, err
+	}
+
+	out := map[string]any{
+		"location": strings.TrimSpace(payload.Location),
+		"datetime": dt,
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(b), nil
 }
 
 // get_time returns the current date/time for the provided IANA time zone database name

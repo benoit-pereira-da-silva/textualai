@@ -1,3 +1,17 @@
+// Copyright 2026 Benoit Pereira da Silva
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package textualopenai
 
 import (
@@ -11,10 +25,9 @@ import (
 	"strings"
 
 	"github.com/benoit-pereira-da-silva/textual/pkg/textual"
-	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai"
 )
 
-// Client defines a textual client for OpenAI's platform
+// Client defines a textual client for OpenAI-compatible /v1 endpoints.
 type Client struct {
 	config     Config
 	httpClient *http.Client
@@ -39,7 +52,7 @@ func (c Client) Config() Config {
 
 // Stream opens a streaming connection to the Responses endpoint and returns the raw HTTP response.
 // Callers must close resp.Body.
-func (c Client) Stream(r textualai.Requestable) (*http.Response, error) {
+func (c Client) Stream(r Requestable) (*http.Response, error) {
 	if err := c.ensureConfig(); err != nil {
 		return nil, err
 	}
@@ -62,7 +75,13 @@ func (c Client) Stream(r textualai.Requestable) (*http.Response, error) {
 	if err != nil {
 		return nil, fmt.Errorf("textualopenai: create request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+c.config.apiKey)
+
+	// Authorization is optional for OpenAI-compatible providers (e.g. Ollama).
+	// When apiKeyRequired=true, ensureConfig() guarantees apiKey is present.
+	if strings.TrimSpace(c.config.apiKey) != "" {
+		req.Header.Set("Authorization", "Bearer "+c.config.apiKey)
+	}
+
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 
@@ -123,14 +142,14 @@ func (c Client) StreamAndTranscodeResponses(ctx context.Context, req *ResponsesR
 }
 
 func (c Client) ensureConfig() error {
-	if strings.TrimSpace(c.config.apiKey) == "" {
-		return errors.New("textualopenai: missing OPENAI_API_KEY")
-	}
 	if strings.TrimSpace(c.config.baseURL) == "" {
-		return errors.New("textualopenai: missing OpenAI base URL (OPENAI_API_URL)")
+		return errors.New("textualopenai: missing base URL (TEXTUALAI_API_URL / TERMCHAT_API_URL)")
 	}
 	if strings.TrimSpace(string(c.config.model)) == "" {
-		return errors.New("textualopenai: missing model (OPENAI_MODEL)")
+		return errors.New("textualopenai: missing model (OPENAI_MODEL / TERMCHAT_MODEL)")
+	}
+	if c.config.apiKeyRequired && strings.TrimSpace(c.config.apiKey) == "" {
+		return errors.New("textualopenai: missing API key (OPENAI_API_KEY)")
 	}
 	return nil
 }

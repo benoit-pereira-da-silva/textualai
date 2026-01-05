@@ -1,18 +1,40 @@
+// Copyright 2026 Benoit Pereira da Silva
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package models
 
 import "strings"
 
-// Tag represents a category tag for a model.
-type Tag string
+// Compile-time check: OllamaModel implements Model.
+var _ Model = OllamaModel{}
 
-// Predefined tags.
-const (
-	TagCloud     Tag = "cloud"
-	TagEmbedding Tag = "embedding"
-	TagVision    Tag = "vision"
-	TagTools     Tag = "tools"
-	TagThinking  Tag = "thinking"
-)
+func (m OllamaModel) ProviderName() ProviderName { return ProviderOllama }
+
+func (m OllamaModel) Identifier() ModelID      { return m.ID }
+func (m OllamaModel) DisplayName() string      { return m.Name }
+func (m OllamaModel) Kind() string             { return m.Flavour }
+func (m OllamaModel) TagList() []Tag           { return m.Tags }
+func (m OllamaModel) Summary() string          { return m.Description }
+func (m OllamaModel) KnownSnapshots() []string { return nil }
+func (m OllamaModel) IsDeprecated() bool       { return false }
+func (m OllamaModel) KnownSizes() []string     { return m.Sizes }
+func (m OllamaModel) LicenseText() string      { return m.License }
+
+func (m OllamaModel) SupportsTools() bool     { return supportsTools(m.Tags) }
+func (m OllamaModel) SupportsThinking() bool  { return supportsThinking(m.Flavour, m.Tags) }
+func (m OllamaModel) SupportsVision() bool    { return supportsVision(m.Flavour, m.Tags) }
+func (m OllamaModel) SupportsEmbedding() bool { return supportsEmbedding(m.Flavour, m.Tags) }
 
 // OllamaModel contains metadata about an Ollama model.
 type OllamaModel struct {
@@ -24,9 +46,6 @@ type OllamaModel struct {
 	Sizes       []string
 	License     string
 }
-
-// ModelID is a unique identifier for a model (as used in Ollama).
-type ModelID string
 
 // Predefined model identifiers.
 const (

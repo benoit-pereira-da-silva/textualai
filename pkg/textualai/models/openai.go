@@ -1,6 +1,40 @@
+// Copyright 2026 Benoit Pereira da Silva
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package models
 
 import "strings"
+
+// Compile-time check: OpenAIModel implements Model.
+var _ Model = OpenAIModel{}
+
+func (m OpenAIModel) ProviderName() ProviderName { return ProviderOpenAI }
+
+func (m OpenAIModel) Identifier() ModelID      { return m.ID }
+func (m OpenAIModel) DisplayName() string      { return m.Name }
+func (m OpenAIModel) Kind() string             { return m.Flavour }
+func (m OpenAIModel) TagList() []Tag           { return m.Tags }
+func (m OpenAIModel) Summary() string          { return m.Description }
+func (m OpenAIModel) KnownSnapshots() []string { return m.Snapshots }
+func (m OpenAIModel) IsDeprecated() bool       { return m.Deprecated }
+func (m OpenAIModel) KnownSizes() []string     { return nil }
+func (m OpenAIModel) LicenseText() string      { return "" }
+
+func (m OpenAIModel) SupportsTools() bool     { return supportsTools(m.Tags) }
+func (m OpenAIModel) SupportsThinking() bool  { return supportsThinking(m.Flavour, m.Tags) }
+func (m OpenAIModel) SupportsVision() bool    { return supportsVision(m.Flavour, m.Tags) }
+func (m OpenAIModel) SupportsEmbedding() bool { return supportsEmbedding(m.Flavour, m.Tags) }
 
 // OpenAIModel contains metadata about an OpenAI Platform model.
 //

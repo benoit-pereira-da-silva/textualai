@@ -1,3 +1,17 @@
+// Copyright 2026 Benoit Pereira da Silva
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package textualopenai
 
 import (
@@ -11,7 +25,6 @@ import (
 	"sync"
 
 	"github.com/benoit-pereira-da-silva/textual/pkg/textual"
-	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai"
 )
 
 // InputItem is the minimal "message-like" shape used in the Responses `input` array.
@@ -159,14 +172,14 @@ type ResponsesRequest struct {
 	// Initialized lazily when the first function tool is registered.
 	functionTools                 map[string]registeredFunctionTool
 	functionCalls                 map[string]*functionCallState
-	functionCallOutputs           []textualai.FunctionCallOutputItem
+	functionCallOutputs           []FunctionCallOutputItem
 	functionCallOutputIndexByCall map[string]int
-	functionCallObserver          textualai.FunctionCallObserver
+	functionCallObserver          FunctionCallObserver
 }
 
 type registeredFunctionTool struct {
-	Tool    textualai.FunctionTool
-	Handler textualai.JSONFunction
+	Tool    FunctionTool
+	Handler JSONFunction
 }
 
 type functionCallState struct {
@@ -386,13 +399,13 @@ func (r *ResponsesRequest) Transcoder() textual.TranscoderFunc[textual.JsonGener
 
 // RegisterFunctionToolStrict is the same as RegisterFunctionTool but allows setting `strict`
 // on the tool definition when supported by the API/model.
-func (r *ResponsesRequest) RegisterFunctionToolStrict(name, description string, parameters any, strict bool, fn textualai.JSONFunction) error {
-	return r.registerFunctionTool(textualai.FunctionTool{
+func (r *ResponsesRequest) RegisterFunctionToolStrict(name, description string, parameters any, strict bool, fn JSONFunction) error {
+	return r.registerFunctionTool(FunctionTool{
 		Type:        "function",
 		Name:        name,
 		Description: description,
 		Parameters:  parameters,
-		Strict:      textualai.BoolPtr(strict),
+		Strict:      BoolPtr(strict),
 	}, fn)
 }
 
@@ -471,7 +484,7 @@ func (r *ResponsesRequest) ensureFunctionDelegateLocked() {
 	}
 }
 
-func (r *ResponsesRequest) SetFunctionCallObserver(f textualai.FunctionCallObserver) {
+func (r *ResponsesRequest) SetFunctionCallObserver(f FunctionCallObserver) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.ensureFunctionDelegateLocked()
@@ -485,8 +498,8 @@ func (r *ResponsesRequest) SetFunctionCallObserver(f textualai.FunctionCallObser
 // - description: natural language description for the model
 // - parameters: JSON Schema object (use map[string]any or a struct that marshals to the schema)
 // - fn: handler invoked with raw JSON arguments, returns raw JSON output
-func (r *ResponsesRequest) RegisterFunctionTool(name, description string, parameters any, fn textualai.JSONFunction) error {
-	return r.registerFunctionTool(textualai.FunctionTool{
+func (r *ResponsesRequest) RegisterFunctionTool(name, description string, parameters any, fn JSONFunction) error {
+	return r.registerFunctionTool(FunctionTool{
 		Type:        "function",
 		Name:        name,
 		Description: description,
@@ -496,14 +509,14 @@ func (r *ResponsesRequest) RegisterFunctionTool(name, description string, parame
 
 // FunctionCallOutputs returns the tool output items produced by the embedded delegate.
 // The returned slice is a copy and safe to modify.
-func (r *ResponsesRequest) FunctionCallOutputs() []textualai.FunctionCallOutputItem {
+func (r *ResponsesRequest) FunctionCallOutputs() []FunctionCallOutputItem {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if len(r.functionCallOutputs) == 0 {
 		return nil
 	}
-	out := make([]textualai.FunctionCallOutputItem, len(r.functionCallOutputs))
+	out := make([]FunctionCallOutputItem, len(r.functionCallOutputs))
 	copy(out, r.functionCallOutputs)
 	return out
 }
@@ -521,7 +534,7 @@ func (r *ResponsesRequest) ClearFunctionCallOutputs() {
 	}
 }
 
-func (r *ResponsesRequest) registerFunctionTool(tool textualai.FunctionTool, fn textualai.JSONFunction) error {
+func (r *ResponsesRequest) registerFunctionTool(tool FunctionTool, fn JSONFunction) error {
 	if r == nil {
 		return errors.New("textualopenai: nil ResponsesRequest")
 	}
@@ -554,7 +567,7 @@ func (r *ResponsesRequest) registerFunctionTool(tool textualai.FunctionTool, fn 
 	return nil
 }
 
-func (r *ResponsesRequest) upsertFunctionToolIntoRequestLocked(tool textualai.FunctionTool) {
+func (r *ResponsesRequest) upsertFunctionToolIntoRequestLocked(tool FunctionTool) {
 	if r.Tools == nil {
 		r.Tools = make([]any, 0, 1)
 	}
@@ -569,9 +582,9 @@ func (r *ResponsesRequest) upsertFunctionToolIntoRequestLocked(tool textualai.Fu
 
 func isSameFunctionTool(t any, name string) bool {
 	switch v := t.(type) {
-	case textualai.FunctionTool:
+	case FunctionTool:
 		return v.Type == "function" && v.Name == name
-	case *textualai.FunctionTool:
+	case *FunctionTool:
 		return v != nil && v.Type == "function" && v.Name == name
 	case map[string]any:
 		typ, _ := v["type"].(string)
@@ -682,8 +695,8 @@ func (r *ResponsesRequest) captureFunctionCallArgumentsDoneAndExecute(ctx contex
 	outputIndex := ev.OutputIndex
 
 	// Snapshot state and handler under lock.
-	var handler textualai.JSONFunction
-	var observer textualai.FunctionCallObserver
+	var handler JSONFunction
+	var observer FunctionCallObserver
 	var argsFromState string
 
 	r.mu.Lock()
@@ -712,7 +725,7 @@ func (r *ResponsesRequest) captureFunctionCallArgumentsDoneAndExecute(ctx contex
 
 	if name == "" {
 		if observer != nil {
-			observer(ctx, textualai.FunctionCall{
+			observer(ctx, FunctionCall{
 				ItemID:      itemID,
 				CallID:      callID,
 				Name:        "",
@@ -725,7 +738,7 @@ func (r *ResponsesRequest) captureFunctionCallArgumentsDoneAndExecute(ctx contex
 
 	if handler == nil {
 		if observer != nil {
-			observer(ctx, textualai.FunctionCall{
+			observer(ctx, FunctionCall{
 				ItemID:      itemID,
 				CallID:      callID,
 				Name:        name,
@@ -743,7 +756,7 @@ func (r *ResponsesRequest) captureFunctionCallArgumentsDoneAndExecute(ctx contex
 
 	outJSON, err := handler(ctx, argsJSON)
 
-	outItem := textualai.FunctionCallOutputItem{
+	outItem := FunctionCallOutputItem{
 		Type:   "function_call_output",
 		CallID: callID,
 		Output: string(outJSON),
@@ -774,7 +787,7 @@ func (r *ResponsesRequest) captureFunctionCallArgumentsDoneAndExecute(ctx contex
 
 	if observer != nil {
 		tmp := outItem
-		observer(ctx, textualai.FunctionCall{
+		observer(ctx, FunctionCall{
 			ItemID:      itemID,
 			CallID:      callID,
 			Name:        name,
