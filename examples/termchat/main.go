@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"strings"
@@ -17,8 +18,8 @@ import (
 
 func main() {
 	var (
-		modelFlag            = flag.String("model", "", "OpenAI model (overrides OPENAI_MODEL)")
-		baseURLFlag          = flag.String("base-url", "", "OpenAI base URL, e.g. https://api.openai.com/v1 (overrides OPENAI_API_URL)")
+		modelFlag            = flag.String("model", "", "model e.g. \"openai:gpt-4.1\" \"ollama:qwen3:32b\" (overrides TEXTUALAI_MODEL)")
+		baseURLFlag          = flag.String("base-url", "", "API base URL, e.g. https://api.openai.com/v1 or http://localhost:11434/v1 (overrides TEXTUALAI_API_URL)")
 		maxOutputTokensFlag  = flag.Int("max-output-tokens", 0, "Maximum output tokens (0 = omit)")
 		instructionsFlag     = flag.String("instructions", "", "Optional assistant instructions (system prompt)")
 		nonInteractivePrompt = flag.String("prompt", "", "If set, runs a single request and exits (otherwise starts a tiny REPL)")
@@ -37,7 +38,10 @@ func main() {
 		}
 	}
 
-	cfg, _ := textualopenai.NewConfig(*baseURLFlag, textualopenai.Model(*modelFlag))
+	cfg, err := textualopenai.NewConfig(*baseURLFlag, textualopenai.Model(*modelFlag))
+	if err != nil {
+		log.Fatal(err)
+	}
 	client := textualopenai.NewClient(cfg, context.Background())
 
 	// Ctrl-C cancellation.
@@ -118,16 +122,7 @@ func runOnce(ctx context.Context, client textualopenai.Client, model string, max
 //  2. executing registered handlers locally,
 //  3. calling the Responses API again with function_call_output items using previous_response_id,
 //  4. repeating until the model produces a response without new tool calls.
-func streamResponsesWithTools(
-	ctx context.Context,
-	client textualopenai.Client,
-	model textualopenai.Model,
-	maxOutputTokens int,
-	instructions string,
-	thinking bool,
-	initialInput any,
-	displayHeaders bool,
-) (string, error) {
+func streamResponsesWithTools(ctx context.Context, client textualopenai.Client, model textualopenai.Model, maxOutputTokens int, instructions string, thinking bool, initialInput any, displayHeaders bool) (string, error) {
 	var full strings.Builder
 
 	input := initialInput

@@ -49,7 +49,7 @@ func NewConfig(baseURL string, model Model) (Config, error) {
 	}
 	config.apiKey = os.Getenv("OPENAI_API_KEY")
 	if config.baseURL == "" {
-		config.baseURL = os.Getenv("OPENAI_API_URL")
+		config.baseURL = os.Getenv("TEXTUALAI_API_URL")
 		if config.baseURL == "" {
 			config.baseURL = DefaultApiUrl
 		}
@@ -67,6 +67,7 @@ func NewConfig(baseURL string, model Model) (Config, error) {
 		case ModelGpt52:
 		case ModelGpt35Turbo:
 		default:
+			return config, nil //
 			return Config{}, fmt.Errorf("textualopenai: invalid model type: %s", config.model)
 		}
 	}

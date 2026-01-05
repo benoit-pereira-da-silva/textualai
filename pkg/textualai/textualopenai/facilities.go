@@ -24,7 +24,7 @@ func StringCarrierFrom(c textual.JsonGenericCarrier[StreamEvent]) textual.String
 	//  - Message: Error or informational message
 
 	switch ev.Type {
-	case OutputTextDelta:
+	case OutputTextDelta, ReasoningSummaryTextDelta:
 		s.Value = ev.Delta
 
 	case TextDone:
