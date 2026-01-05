@@ -41,7 +41,7 @@ type sessionOptions struct {
 
 func main() {
 	var (
-		modelFlag            = flag.String("model", "", "model e.g. \"openai:gpt-4.1\" \"ollama:qwen3:32b\" (overrides TERMCHAT_MODEL)")
+		modelFlag            = flag.String("model", "", "model e.g. \"openai:gpt-4.1\" \"ollama:qwen3:32b\" \"xai:grok-4-1-fast\"")
 		baseURLFlag          = flag.String("base-url", "", "API base URL, e.g. https://api.openai.com/v1 or http://localhost:11434/v1 (overrides TERMCHAT_API_URL)")
 		maxOutputTokensFlag  = flag.Int("max-output-tokens", 0, "Maximum output tokens (0 = omit)")
 		instructionsFlag     = flag.String("instructions", "", "Optional assistant instructions (system prompt)")
@@ -51,11 +51,8 @@ func main() {
 	)
 	flag.Parse()
 
-	// Resolve model string name descriptor (flag > env > default).
-	rawModel := resolveModel(*modelFlag)
-
-	// Resolve model (best-effort).
-	model, err := models.ModelFromString(rawModel)
+	// Resolve model
+	model, err := models.ModelFromString(*modelFlag)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -66,7 +63,7 @@ func main() {
 		log.Fatalf("termchat: -thinking requested but model %q does not advertise reasoning/thinking support", model.DisplayName())
 	}
 
-	client, err := textualopenai.ClientFrom(*baseURLFlag, model, context.Background(), "XAI_API_KEY", "OPENAI_API_KEY", "TEXTUALAI_API_KEY")
+	client, err := textualopenai.ClientFrom(*baseURLFlag, model, context.Background(), "XAI_API_KEY", "OPENAI_API_KEY")
 	opts := sessionOptions{
 		Model:              model,
 		MaxOutputTokens:    *maxOutputTokensFlag,
@@ -98,19 +95,6 @@ func main() {
 	}
 
 	runRepl(ctx, client, opts)
-}
-
-func resolveModel(modelFlag string) string {
-	if v := strings.TrimSpace(modelFlag); v != "" {
-		return v
-	}
-	if v := strings.TrimSpace(os.Getenv("TERMCHAT_MODEL")); v != "" {
-		return v
-	}
-	if v := strings.TrimSpace(os.Getenv("OPENAI_MODEL")); v != "" {
-		return v
-	}
-	return ""
 }
 
 // runRepl is a Minimal REP that keeps conversation history in memory.
