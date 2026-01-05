@@ -31,7 +31,8 @@ func ModelFromString(s string) (Model, error) {
 
 // Resolve returns the best-effort Model metadata for (provider, id).
 //
-// It uses curated lists when possible, and falls back to UniversalModel when unknown.
+// It uses curated lists when possible.
+// For some providers (currently xAI), it falls back to a best-effort model record when unknown.
 func Resolve(provider ProviderName, id ModelID) (Model, error) {
 	p := provider
 	if strings.TrimSpace(string(p)) == "" {
@@ -47,11 +48,30 @@ func Resolve(provider ProviderName, id ModelID) (Model, error) {
 			return m, nil
 		}
 		return OpenAIModel{}, fmt.Errorf("openai model not found %s", mid)
+
 	case ProviderOllama:
 		if m, ok := LookupOllamaModel(mid); ok {
 			return m, nil
 		}
 		return OpenAIModel{}, fmt.Errorf("ollama model not found %s", mid)
+
+	case ProviderXAI:
+		if m, ok := LookupXAIModel(mid); ok {
+			return m, nil
+		}
+
+		// Best-effort fallback for xAI:
+		// allow using valid xAI model IDs even if they are not in our curated list.
+		return XAIModel{
+			ID:          mid,
+			Name:        string(mid),
+			Flavour:     "",
+			Tags:        []Tag{TagCloud},
+			Description: "Unlisted xAI model (best-effort metadata).",
+			Snapshots:   nil,
+			Deprecated:  false,
+		}, nil
+
 	default:
 		return OpenAIModel{}, errors.New("provider name is invalid")
 	}
@@ -144,4 +164,37 @@ func LookupOllamaModel(id ModelID) (OllamaModel, bool) {
 	}
 
 	return OllamaModel{}, false
+}
+
+// LookupXAIModel tries to find a curated xAI model entry by:
+//  1. exact ID match (base model IDs), then
+//  2. snapshot ID match (pinned versions listed in Snapshots).
+//
+// When a snapshot match is found, the returned model is a copy of the base entry
+// with ID set to the snapshot value.
+func LookupXAIModel(id ModelID) (XAIModel, bool) {
+	idStr := strings.TrimSpace(string(id))
+	if idStr == "" {
+		return XAIModel{}, false
+	}
+
+	// 1) Exact match on base ID.
+	for _, m := range AllXAIModels.All {
+		if strings.TrimSpace(string(m.ID)) == idStr {
+			return m, true
+		}
+	}
+
+	// 2) Snapshot match.
+	for _, m := range AllXAIModels.All {
+		for _, snap := range m.Snapshots {
+			if strings.TrimSpace(snap) == idStr {
+				mm := m
+				mm.ID = ModelID(idStr)
+				return mm, true
+			}
+		}
+	}
+
+	return XAIModel{}, false
 }

@@ -66,7 +66,7 @@ func main() {
 		log.Fatalf("termchat: -thinking requested but model %q does not advertise reasoning/thinking support", model.DisplayName())
 	}
 
-	client, err := textualopenai.ClientFrom(*baseURLFlag, model, context.Background())
+	client, err := textualopenai.ClientFrom(*baseURLFlag, model, context.Background(), "XAI_API_KEY", "OPENAI_API_KEY", "TEXTUALAI_API_KEY")
 	opts := sessionOptions{
 		Model:              model,
 		MaxOutputTokens:    *maxOutputTokensFlag,
@@ -263,14 +263,10 @@ func buildRequest(
 		return nil, listErr
 	}
 
-	// 	you can Add an observer for any event.
 	/*
-		last := time.Now()
+		// 	you can Add an observer for any event.
 		obsErr := req.AddObservers(func(e textual.JsonGenericCarrier[textualopenai.StreamEvent]) {
-			// We can add a monitoring logic here
-			ts := time.Now()
-			_, _ = fmt.Fprint(os.Stderr, ts.Sub(last).Milliseconds(), "ms >>", e.Value.ToJson(), "\n")
-			last = ts
+			_, _ = fmt.Fprint(os.Stderr, e.Value.Summary())
 		}, textualopenai.AllEvent)
 		if obsErr != nil {
 			return nil, obsErr

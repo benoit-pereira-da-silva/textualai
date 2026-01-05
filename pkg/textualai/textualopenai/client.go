@@ -41,7 +41,7 @@ type Client struct {
 	apiKeyRequired bool
 }
 
-func ClientFrom(baseURL string, model models.Model, ctx context.Context) (Client, error) {
+func ClientFrom(baseURL string, model models.Model, ctx context.Context, providerApiEnv ...string) (Client, error) {
 	// NOTE: http.Client.Timeout covers the whole request lifetime (including reading resp.Body).
 	// For streaming requests, we rely on context cancellation instead, so Timeout is left to 0.
 	client := Client{
@@ -51,10 +51,7 @@ func ClientFrom(baseURL string, model models.Model, ctx context.Context) (Client
 		ctx: ctx,
 	}
 	client.model = model
-	client.apiKey = strings.TrimSpace(firstNonEmpty(
-		os.Getenv("OPENAI_API_KEY"),
-		os.Getenv("TEXTUALAI_API_KEY"),
-	))
+	client.apiKey = strings.TrimSpace(firstNonEmpty(providerApiEnv...))
 	baseURL = strings.TrimSpace(baseURL)
 	if baseURL == "" {
 		baseURL = model.ProviderInfo().DefaultBaseURL
@@ -64,9 +61,7 @@ func ClientFrom(baseURL string, model models.Model, ctx context.Context) (Client
 		return client, err
 	}
 	client.baseURL = validUrl.String()
-	if client.model.ProviderInfo().Name == models.ProviderOpenAI {
-		client.apiKeyRequired = true // Force the requirement
-	}
+	client.apiKeyRequired = model.ProviderInfo().APIKeyRequired
 	return client, nil
 }
 
@@ -80,7 +75,8 @@ func (c Client) Model() models.Model {
 }
 
 func firstNonEmpty(values ...string) string {
-	for _, v := range values {
+	for _, key := range values {
+		v := os.Getenv(key)
 		if strings.TrimSpace(v) != "" {
 			return v
 		}

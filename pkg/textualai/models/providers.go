@@ -7,11 +7,13 @@ import "strings"
 // Examples:
 //   - "openai"  -> OpenAI Platform
 //   - "ollama"  -> Ollama (OpenAI-compatible /v1 endpoints)
+//   - "xai"     -> xAI (OpenAI-compatible /v1 endpoints)
 type ProviderName string
 
 const (
 	ProviderOpenAI ProviderName = "openai"
 	ProviderOllama ProviderName = "ollama"
+	ProviderXAI    ProviderName = "xai"
 )
 
 // ProviderInfo contains provider-level capabilities and defaults.
@@ -59,6 +61,14 @@ var Providers = map[ProviderName]ProviderInfo{
 		DisplayName:                 "Ollama",
 		DefaultBaseURL:              "http://localhost:11434/v1",
 		APIKeyRequired:              false,
+		SupportsConversation:        false,
+		SupportsStrictFunctionTools: false,
+	},
+	ProviderXAI: {
+		Name:                        ProviderXAI,
+		DisplayName:                 "xAI",
+		DefaultBaseURL:              "https://api.x.ai/v1",
+		APIKeyRequired:              true,
 		SupportsConversation:        false,
 		SupportsStrictFunctionTools: false,
 	},

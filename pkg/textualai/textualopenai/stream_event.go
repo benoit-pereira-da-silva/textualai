@@ -14,7 +14,10 @@
 
 package textualopenai
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 /*
 EventType represents the semantic event types emitted by the OpenAI
@@ -260,4 +263,39 @@ func (s StreamEvent) IsTextDelta() bool {
 func (s StreamEvent) ToJson() string {
 	b, _ := json.Marshal(s)
 	return string(b)
+}
+
+func (s StreamEvent) Summary() string {
+	sum := ""
+	switch s.Type {
+	case OutputTextDelta:
+		sum = fmt.Sprintf("\ntext delta: %s", s.Delta)
+	case ReasoningSummaryTextDelta:
+		sum = fmt.Sprintf("\nreasoning delta: %s", s.Delta)
+	case TextDone:
+		sum = fmt.Sprintf("\ntext: %s", s.Text)
+	case RefusalDelta:
+		sum = fmt.Sprintf("\nrefusal: %s", s.Refusal)
+	case RefusalDone:
+		sum = fmt.Sprintf("\nrefusal: %s", s.Refusal)
+	case ResponseFailed, Error:
+		// Response failures and "error" events should be surfaced as errors.
+		if s.Message != "" {
+			sum = fmt.Sprintf("\nerror: %s", s.Message)
+		} else if s.Refusal != "" {
+			sum = fmt.Sprintf("\nerror: %s", s.Refusal)
+		} else if s.Text != "" {
+			sum = fmt.Sprintf("\nerror: %s", s.Text)
+		}
+	default:
+		if s.Text != "" {
+			sum = fmt.Sprintf("\ntext: %s", s.Text)
+		} else if s.Code != "" {
+			sum = fmt.Sprintf("\ncode: %s", s.Code)
+		} else if s.Message != "" {
+			sum = fmt.Sprintf("\nmessage: %s", s.Message)
+		}
+	}
+	return sum
+
 }

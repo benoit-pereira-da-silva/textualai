@@ -19,7 +19,7 @@ import "strings"
 // Search returns models whose provider, display name, identifier, kind, or tags
 // contain the query substring (case-insensitive).
 //
-// It searches across all curated providers (currently OpenAI + Ollama).
+// It searches across all curated providers (currently OpenAI + Ollama + xAI).
 func Search(query string) []Model {
 	q := strings.ToLower(strings.TrimSpace(query))
 	if q == "" {
@@ -34,6 +34,11 @@ func Search(query string) []Model {
 		}
 	}
 	for _, m := range AllOllamaModels.All {
+		if modelMatches(m, q) {
+			results = append(results, m)
+		}
+	}
+	for _, m := range AllXAIModels.All {
 		if modelMatches(m, q) {
 			results = append(results, m)
 		}
@@ -58,6 +63,12 @@ func SearchProvider(provider ProviderName, query string) []Model {
 		}
 	case ProviderOllama:
 		for _, m := range AllOllamaModels.All {
+			if modelMatches(m, q) {
+				results = append(results, m)
+			}
+		}
+	case ProviderXAI:
+		for _, m := range AllXAIModels.All {
 			if modelMatches(m, q) {
 				results = append(results, m)
 			}
