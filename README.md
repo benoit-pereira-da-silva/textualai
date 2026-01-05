@@ -26,6 +26,7 @@ Currently focused on **OpenAI-compatible APIs**:
 
 - [OpenAI Platform](https://platform.openai.com/docs/overview)
 - [Ollama](https://docs.ollama.com)
+- [xAI](https://docs.x.ai/docs/overview)
 - *More providers coming soon…*
 
 ---
