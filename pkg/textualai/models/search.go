@@ -20,25 +20,25 @@ import "strings"
 // contain the query substring (case-insensitive).
 //
 // It searches across all curated providers (currently OpenAI + Ollama + xAI).
-func Search(query string) []Model {
+func Search(query string) Models {
 	q := strings.ToLower(strings.TrimSpace(query))
 	if q == "" {
 		return nil
 	}
 
-	var results []Model
+	var results Models
 
-	for _, m := range AllOpenAIModels.All {
+	for _, m := range AllOpenAIModels {
 		if modelMatches(m, q) {
 			results = append(results, m)
 		}
 	}
-	for _, m := range AllOllamaModels.All {
+	for _, m := range AllOllamaModels {
 		if modelMatches(m, q) {
 			results = append(results, m)
 		}
 	}
-	for _, m := range AllXAIModels.All {
+	for _, m := range AllXAIModels {
 		if modelMatches(m, q) {
 			results = append(results, m)
 		}
@@ -48,27 +48,27 @@ func Search(query string) []Model {
 }
 
 // SearchProvider is like Search but restricted to a single provider.
-func SearchProvider(provider ProviderName, query string) []Model {
+func SearchProvider(provider ProviderName, query string) Models {
 	q := strings.ToLower(strings.TrimSpace(query))
 	if q == "" {
 		return nil
 	}
-	var results []Model
+	var results Models
 	switch provider {
 	case ProviderOpenAI:
-		for _, m := range AllOpenAIModels.All {
+		for _, m := range AllOpenAIModels {
 			if modelMatches(m, q) {
 				results = append(results, m)
 			}
 		}
 	case ProviderOllama:
-		for _, m := range AllOllamaModels.All {
+		for _, m := range AllOllamaModels {
 			if modelMatches(m, q) {
 				results = append(results, m)
 			}
 		}
 	case ProviderXAI:
-		for _, m := range AllXAIModels.All {
+		for _, m := range AllXAIModels {
 			if modelMatches(m, q) {
 				results = append(results, m)
 			}
@@ -118,6 +118,29 @@ func modelMatches(m Model, q string) bool {
 			return true
 		}
 	}
-
 	return false
+}
+
+// Search finds models whose Name, ID, or Tags contain the query substring (case-insensitive).
+func (m Models) Search(query string) Models {
+	q := strings.ToLower(strings.TrimSpace(query))
+	if q == "" {
+		return nil
+	}
+	var results Models
+	for _, model := range m {
+		if strings.Contains(strings.ToLower(string(model.Identifier())), q) ||
+			strings.Contains(strings.ToLower(string(model.DisplayName())), q) {
+			results = append(results, model)
+			continue
+		}
+
+		for _, tag := range model.TagList() {
+			if strings.Contains(strings.ToLower(string(tag)), q) {
+				results = append(results, model)
+				break
+			}
+		}
+	}
+	return results
 }

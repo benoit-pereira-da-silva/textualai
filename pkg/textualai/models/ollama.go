@@ -14,8 +14,6 @@
 
 package models
 
-import "strings"
-
 // Compile-time check: OllamaModel implements Model.
 var _ Model = OllamaModel{}
 
@@ -251,12 +249,10 @@ const (
 )
 
 // OllamaModels holds a collection of OllamaModel metadata.
-type OllamaModels struct {
-	All []OllamaModel
-}
+type OllamaModels []OllamaModel
 
 // AllOllamaModels is the list of all available models.
-var AllOllamaModels = OllamaModels{All: []OllamaModel{
+var AllOllamaModels = OllamaModels{
 	{
 		ID:          Nemotron3Nano,
 		Name:        "Nemotron 3 Nano",
@@ -2057,24 +2053,4 @@ var AllOllamaModels = OllamaModels{All: []OllamaModel{
 		Sizes:       nil,
 		License:     "",
 	},
-},
-}
-
-// Search finds models whose Name or Tags contain the query substring (case-insensitive).
-func (m *OllamaModels) Search(query string) []OllamaModel {
-	q := strings.ToLower(query)
-	var results []OllamaModel
-	for _, model := range m.All {
-		if strings.Contains(strings.ToLower(model.Name), q) {
-			results = append(results, model)
-			continue
-		}
-		for _, tag := range model.Tags {
-			if strings.Contains(strings.ToLower(string(tag)), q) {
-				results = append(results, model)
-				break
-			}
-		}
-	}
-	return results
 }

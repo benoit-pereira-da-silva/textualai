@@ -83,21 +83,21 @@ func Resolve(provider ProviderName, id ModelID) (Model, error) {
 //
 // When a snapshot match is found, the returned model is a copy of the base entry
 // with ID set to the snapshot value.
-func LookupOpenAIModel(id ModelID) (OpenAIModel, bool) {
+func LookupOpenAIModel(id ModelID) (Model, bool) {
 	idStr := strings.TrimSpace(string(id))
 	if idStr == "" {
 		return OpenAIModel{}, false
 	}
 
 	// 1) Exact match on base ID.
-	for _, m := range AllOpenAIModels.All {
+	for _, m := range AllOpenAIModels {
 		if strings.TrimSpace(string(m.ID)) == idStr {
 			return m, true
 		}
 	}
 
 	// 2) Snapshot match.
-	for _, m := range AllOpenAIModels.All {
+	for _, m := range AllOpenAIModels {
 		for _, snap := range m.Snapshots {
 			if strings.TrimSpace(snap) == idStr {
 				mm := m
@@ -115,14 +115,14 @@ func LookupOpenAIModel(id ModelID) (OpenAIModel, bool) {
 //  2. "base:variant" match where base is a curated ID and variant is a size/tag.
 //
 // For example, "qwen3:32b" will be resolved from the "qwen3" curated entry when present.
-func LookupOllamaModel(id ModelID) (OllamaModel, bool) {
+func LookupOllamaModel(id ModelID) (Model, bool) {
 	idStr := strings.TrimSpace(string(id))
 	if idStr == "" {
 		return OllamaModel{}, false
 	}
 
 	// 1) Exact match.
-	for _, m := range AllOllamaModels.All {
+	for _, m := range AllOllamaModels {
 		if strings.TrimSpace(string(m.ID)) == idStr {
 			return m, true
 		}
@@ -139,7 +139,7 @@ func LookupOllamaModel(id ModelID) (OllamaModel, bool) {
 		return OllamaModel{}, false
 	}
 
-	for _, m := range AllOllamaModels.All {
+	for _, m := range AllOllamaModels {
 		if strings.TrimSpace(string(m.ID)) != base {
 			continue
 		}
@@ -172,21 +172,21 @@ func LookupOllamaModel(id ModelID) (OllamaModel, bool) {
 //
 // When a snapshot match is found, the returned model is a copy of the base entry
 // with ID set to the snapshot value.
-func LookupXAIModel(id ModelID) (XAIModel, bool) {
+func LookupXAIModel(id ModelID) (Model, bool) {
 	idStr := strings.TrimSpace(string(id))
 	if idStr == "" {
 		return XAIModel{}, false
 	}
 
 	// 1) Exact match on base ID.
-	for _, m := range AllXAIModels.All {
+	for _, m := range AllXAIModels {
 		if strings.TrimSpace(string(m.ID)) == idStr {
 			return m, true
 		}
 	}
 
 	// 2) Snapshot match.
-	for _, m := range AllXAIModels.All {
+	for _, m := range AllXAIModels {
 		for _, snap := range m.Snapshots {
 			if strings.TrimSpace(snap) == idStr {
 				mm := m

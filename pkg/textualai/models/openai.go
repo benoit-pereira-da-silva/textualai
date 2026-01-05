@@ -14,8 +14,6 @@
 
 package models
 
-import "strings"
-
 // Compile-time check: OpenAIModel implements Model.
 var _ Model = OpenAIModel{}
 
@@ -67,9 +65,7 @@ type OpenAIModel struct {
 }
 
 // OpenAIModels holds a collection of OpenAIModel metadata.
-type OpenAIModels struct {
-	All []OpenAIModel
-}
+type OpenAIModels []OpenAIModel
 
 // OpenAI Platform model identifiers.
 //
@@ -171,7 +167,7 @@ const (
 //   - This list intentionally focuses on developer-facing, documented model IDs.
 //   - Some models are marked Deprecated when the docs label them as such.
 //   - Snapshots are provided for frequently pinned models; when in doubt, use the base ID.
-var AllOpenAIModels = OpenAIModels{All: []OpenAIModel{
+var AllOpenAIModels = OpenAIModels{
 	// Frontier reasoning (GPT-5 family).
 	{
 		ID:          GPT52Pro,
@@ -631,29 +627,4 @@ var AllOpenAIModels = OpenAIModels{All: []OpenAIModel{
 		Description: "Deprecated image generation model.",
 		Deprecated:  true,
 	},
-}}
-
-// Search finds models whose Name, ID, or Tags contain the query substring (case-insensitive).
-func (m *OpenAIModels) Search(query string) []OpenAIModel {
-	q := strings.ToLower(strings.TrimSpace(query))
-	if q == "" {
-		return nil
-	}
-
-	var results []OpenAIModel
-	for _, model := range m.All {
-		if strings.Contains(strings.ToLower(model.Name), q) ||
-			strings.Contains(strings.ToLower(string(model.ID)), q) {
-			results = append(results, model)
-			continue
-		}
-
-		for _, tag := range model.Tags {
-			if strings.Contains(strings.ToLower(string(tag)), q) {
-				results = append(results, model)
-				break
-			}
-		}
-	}
-	return results
 }

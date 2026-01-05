@@ -75,7 +75,6 @@ func HeaderInfosFromHTTPResponse(resp *http.Response) HeaderInfos {
 // with exactly one information per line. Zero-value fields are skipped.
 func (h HeaderInfos) ToString() string {
 	var b strings.Builder
-
 	write := func(label, value string) {
 		if value == "" {
 			return

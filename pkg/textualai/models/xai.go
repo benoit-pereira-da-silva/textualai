@@ -14,8 +14,6 @@
 
 package models
 
-import "strings"
-
 // Compile-time check: XAIModel implements Model.
 var _ Model = XAIModel{}
 
@@ -63,9 +61,7 @@ type XAIModel struct {
 }
 
 // XAIModels holds a collection of XAIModel metadata.
-type XAIModels struct {
-	All []XAIModel
-}
+type XAIModels []XAIModel
 
 // xAI model identifiers (curated).
 //
@@ -83,7 +79,7 @@ const (
 // AllXAIModels is a curated list of xAI models.
 //
 // Tags and flavours are best-effort UI hints; the authoritative capabilities are determined by the provider.
-var AllXAIModels = XAIModels{All: []XAIModel{
+var AllXAIModels = XAIModels{
 	{
 		ID:          Grok4,
 		Name:        "Grok 4",
@@ -126,28 +122,4 @@ var AllXAIModels = XAIModels{All: []XAIModel{
 		Tags:        []Tag{TagCloud, TagTools},
 		Description: "Non-reasoning fast Grok tier (OpenAI-compatible).",
 	},
-}}
-
-// Search finds models whose Name, ID, or Tags contain the query substring (case-insensitive).
-func (m *XAIModels) Search(query string) []XAIModel {
-	q := strings.ToLower(strings.TrimSpace(query))
-	if q == "" {
-		return nil
-	}
-
-	var results []XAIModel
-	for _, model := range m.All {
-		if strings.Contains(strings.ToLower(model.Name), q) ||
-			strings.Contains(strings.ToLower(string(model.ID)), q) {
-			results = append(results, model)
-			continue
-		}
-		for _, tag := range model.Tags {
-			if strings.Contains(strings.ToLower(string(tag)), q) {
-				results = append(results, model)
-				break
-			}
-		}
-	}
-	return results
 }

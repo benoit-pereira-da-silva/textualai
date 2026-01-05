@@ -66,6 +66,8 @@ type Model interface {
 	SupportsEmbedding() bool
 }
 
+type Models []Model
+
 func supportsTools(tags []Tag) bool {
 	return hasTag(tags, TagTools)
 }
