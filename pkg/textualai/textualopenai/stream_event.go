@@ -33,6 +33,8 @@ https://platform.openai.com/docs/api-reference/responses-streaming
 */
 type EventType string
 
+type EventTypes []EventType
+
 const (
 
 	// AllEvent permit observing or listen any EventType.
