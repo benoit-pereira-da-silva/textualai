@@ -70,7 +70,7 @@ func modelMatches(m Model, q string) bool {
 	if strings.Contains(strings.ToLower(string(m.ID)), q) {
 		return true
 	}
-	if strings.Contains(strings.ToLower(strings.TrimSpace(m.Flavour)), q) {
+	if strings.Contains(strings.ToLower(strings.TrimSpace(m.Flavor)), q) {
 		return true
 	}
 

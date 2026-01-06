@@ -16,6 +16,7 @@ package models
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -42,7 +43,7 @@ func Resolve(providerName ProviderName, id ModelID) (Model, error) {
 	mid := ModelID(strings.TrimSpace(string(id)))
 	provider, ok := Providers[providerName]
 	if !ok {
-		return Model{}, errors.New("provider not found")
+		return Model{}, fmt.Errorf("provider named \"%s\" not found", providerName)
 	}
 	models := provider.Models
 	idStr := strings.TrimSpace(string(mid))
@@ -92,5 +93,5 @@ func Resolve(providerName ProviderName, id ModelID) (Model, error) {
 			}
 		}
 	}
-	return Model{}, errors.New("not found")
+	return Model{}, fmt.Errorf("model not found provider name: %s modelId: %s", providerName, id)
 }

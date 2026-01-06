@@ -23,25 +23,25 @@ func supportsTools(tags []Tag) bool {
 	return hasTag(tags, TagTools)
 }
 
-func supportsThinking(flavour string, tags []Tag) bool {
+func supportsThinking(flavor string, tags []Tag) bool {
 	if hasTag(tags, TagThinking) {
 		return true
 	}
-	return strings.EqualFold(strings.TrimSpace(flavour), "thinking")
+	return strings.EqualFold(strings.TrimSpace(flavor), "thinking")
 }
 
-func supportsVision(flavour string, tags []Tag) bool {
+func supportsVision(flavor string, tags []Tag) bool {
 	if hasTag(tags, TagVision) {
 		return true
 	}
-	return strings.EqualFold(strings.TrimSpace(flavour), "vision")
+	return strings.EqualFold(strings.TrimSpace(flavor), "vision")
 }
 
-func supportsEmbedding(flavour string, tags []Tag) bool {
+func supportsEmbedding(flavor string, tags []Tag) bool {
 	if hasTag(tags, TagEmbedding) {
 		return true
 	}
-	return strings.EqualFold(strings.TrimSpace(flavour), "embedding")
+	return strings.EqualFold(strings.TrimSpace(flavor), "embedding")
 }
 
 func hasTag(tags []Tag, want Tag) bool {
@@ -72,35 +72,35 @@ type Models []Model
 type Model struct {
 
 	// ProviderName is injected by the Providers init func.
-	ProviderName ProviderName
+	ProviderName ProviderName `json:"providerName"`
 
-	// id is the stable alias used in the API, e.g. "grok-4".
-	ID ModelID
+	// ID is the stable alias used in the API, e.g. "grok-4".
+	ID ModelID `json:"id"`
 
-	// name is a human-friendly display name.
-	Name string
+	// Name is a human-friendly display name.
+	Name string `json:"name"`
 
-	// flavour is a loose category used for UI/filters (e.g. "thinking", "instruct",
+	// Flavor is a loose category used for UI/filters (e.g. "thinking", "instruct",
 	// "embedding", "image", "audio", "moderation", "tools").
-	Flavour string
+	Flavor string `json:"flavor"`
 
-	// tags is a list of cross-cutting capabilities (vision, tools, thinking, etc.).
-	Tags []Tag
+	// Tags is a list of cross-cutting capabilities (vision, tools, thinking, etc.).
+	Tags []Tag `json:"tags"`
 
-	// description is a short, UI-friendly summary of the model.
-	Description string
+	// Description is a short, UI-friendly summary of the model.
+	Description string `json:"description"`
 
-	// sizes optionally list known sizes variants (ollama)
-	Sizes []string
+	// Sizes optionally list known sizes variants (ollama)
+	Sizes []string `json:"sizes"`
 
-	// snapshots optionally list known pinned model versions (if any).
-	Snapshots []string
+	// Snapshots optionally list known pinned model versions (if any).
+	Snapshots []string `json:"snapshots"`
 
-	// license the licence of the model if applicable.
-	License string
+	// License the license of the model if applicable.
+	License string `json:"license"`
 
-	// deprecated indicates the model is listed as deprecated.
-	Deprecated bool
+	// Deprecated indicates the model is listed as deprecated.
+	Deprecated bool `json:"deprecated"`
 }
 
 func (m Model) ProviderInfo() ProviderInfo {
@@ -108,6 +108,6 @@ func (m Model) ProviderInfo() ProviderInfo {
 	return pi
 }
 func (m Model) SupportsTools() bool     { return supportsTools(m.Tags) }
-func (m Model) SupportsThinking() bool  { return supportsThinking(m.Flavour, m.Tags) }
-func (m Model) SupportsVision() bool    { return supportsVision(m.Flavour, m.Tags) }
-func (m Model) SupportsEmbedding() bool { return supportsEmbedding(m.Flavour, m.Tags) }
+func (m Model) SupportsThinking() bool  { return supportsThinking(m.Flavor, m.Tags) }
+func (m Model) SupportsVision() bool    { return supportsVision(m.Flavor, m.Tags) }
+func (m Model) SupportsEmbedding() bool { return supportsEmbedding(m.Flavor, m.Tags) }
