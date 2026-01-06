@@ -14,36 +14,6 @@
 
 package models
 
-// Compile-time check: OllamaModel implements Model.
-var _ Model = OllamaModel{}
-
-func (m OllamaModel) ProviderInfo() ProviderInfo { p, _ := Providers[ProviderOllama]; return p }
-func (m OllamaModel) Identifier() ModelID        { return m.ID }
-func (m OllamaModel) DisplayName() string        { return m.Name }
-func (m OllamaModel) Kind() string               { return m.Flavour }
-func (m OllamaModel) TagList() []Tag             { return m.Tags }
-func (m OllamaModel) Summary() string            { return m.Description }
-func (m OllamaModel) KnownSnapshots() []string   { return nil }
-func (m OllamaModel) IsDeprecated() bool         { return false }
-func (m OllamaModel) KnownSizes() []string       { return m.Sizes }
-func (m OllamaModel) LicenseText() string        { return m.License }
-
-func (m OllamaModel) SupportsTools() bool     { return supportsTools(m.Tags) }
-func (m OllamaModel) SupportsThinking() bool  { return supportsThinking(m.Flavour, m.Tags) }
-func (m OllamaModel) SupportsVision() bool    { return supportsVision(m.Flavour, m.Tags) }
-func (m OllamaModel) SupportsEmbedding() bool { return supportsEmbedding(m.Flavour, m.Tags) }
-
-// OllamaModel contains metadata about an Ollama model.
-type OllamaModel struct {
-	ID          ModelID
-	Name        string
-	Flavour     string
-	Tags        []Tag
-	Description string
-	Sizes       []string
-	License     string
-}
-
 // Predefined model identifiers.
 const (
 	Nemotron3Nano          ModelID = "nemotron-3-nano"
@@ -248,11 +218,8 @@ const (
 	KimiK2Thinking         ModelID = "kimi-k2-thinking"
 )
 
-// OllamaModels holds a collection of OllamaModel metadata.
-type OllamaModels []OllamaModel
-
 // AllOllamaModels is the list of all available models.
-var AllOllamaModels = OllamaModels{
+var AllOllamaModels = Models{
 	{
 		ID:          Nemotron3Nano,
 		Name:        "Nemotron 3 Nano",

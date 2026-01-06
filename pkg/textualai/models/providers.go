@@ -1,30 +1,60 @@
 package models
 
+const (
+	ProviderOpenAI ProviderName = "openai"
+	ProviderOllama ProviderName = "ollama"
+	ProviderXAI    ProviderName = "xai"
+)
+
+func init() {
+	// Inject the provider names in the Models.
+	for name, prov := range Providers {
+		models := make([]Model, len(prov.Models))
+		for idx, model := range prov.Models {
+			model.ProviderName = name
+			models[idx] = model
+		}
+		Providers[name] = Provider{
+			Info:   prov.Info,
+			Models: models,
+		}
+	}
+}
+
 // Providers is a small provider registry used for model parsing and capability gating.
 // Add new providers here as the framework expands.
-var Providers = map[ProviderName]ProviderInfo{
-	ProviderOpenAI: {
-		Name:                        ProviderOpenAI,
-		DisplayName:                 "OpenAI",
-		DefaultBaseURL:              "https://api.openai.com/v1",
-		APIKeyRequired:              true,
-		SupportsConversation:        true,
-		SupportsStrictFunctionTools: true,
+var Providers = map[ProviderName]Provider{
+	ProviderOpenAI: Provider{
+		Info: ProviderInfo{
+			Name:                        ProviderOpenAI,
+			DisplayName:                 "OpenAI",
+			DefaultBaseURL:              "https://api.openai.com/v1",
+			APIKeyRequired:              true,
+			SupportsConversation:        true,
+			SupportsStrictFunctionTools: true,
+		},
+		Models: AllOpenAIModels,
 	},
-	ProviderOllama: {
-		Name:                        ProviderOllama,
-		DisplayName:                 "Ollama",
-		DefaultBaseURL:              "http://localhost:11434/v1",
-		APIKeyRequired:              false,
-		SupportsConversation:        false,
-		SupportsStrictFunctionTools: false,
+	ProviderOllama: Provider{
+		Info: ProviderInfo{
+			Name:                        ProviderOllama,
+			DisplayName:                 "Ollama",
+			DefaultBaseURL:              "http://localhost:11434/v1",
+			APIKeyRequired:              false,
+			SupportsConversation:        false,
+			SupportsStrictFunctionTools: false,
+		},
+		Models: AllOllamaModels,
 	},
-	ProviderXAI: {
-		Name:                        ProviderXAI,
-		DisplayName:                 "xAI",
-		DefaultBaseURL:              "https://api.x.ai/v1",
-		APIKeyRequired:              true,
-		SupportsConversation:        false,
-		SupportsStrictFunctionTools: false,
+	ProviderXAI: Provider{
+		Info: ProviderInfo{
+			Name:                        ProviderXAI,
+			DisplayName:                 "xAI",
+			DefaultBaseURL:              "https://api.x.ai/v1",
+			APIKeyRequired:              true,
+			SupportsConversation:        false,
+			SupportsStrictFunctionTools: false,
+		},
+		Models: AllXAIModels,
 	},
 }

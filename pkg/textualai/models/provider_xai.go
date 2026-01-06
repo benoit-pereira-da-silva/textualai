@@ -14,55 +14,6 @@
 
 package models
 
-// Compile-time check: XAIModel implements Model.
-var _ Model = XAIModel{}
-
-func (m XAIModel) ProviderInfo() ProviderInfo { p, _ := Providers[ProviderXAI]; return p }
-func (m XAIModel) Identifier() ModelID        { return m.ID }
-func (m XAIModel) DisplayName() string        { return m.Name }
-func (m XAIModel) Kind() string               { return m.Flavour }
-func (m XAIModel) TagList() []Tag             { return m.Tags }
-func (m XAIModel) Summary() string            { return m.Description }
-func (m XAIModel) KnownSnapshots() []string   { return m.Snapshots }
-func (m XAIModel) IsDeprecated() bool         { return m.Deprecated }
-func (m XAIModel) KnownSizes() []string       { return nil }
-func (m XAIModel) LicenseText() string        { return "" }
-
-func (m XAIModel) SupportsTools() bool     { return supportsTools(m.Tags) }
-func (m XAIModel) SupportsThinking() bool  { return supportsThinking(m.Flavour, m.Tags) }
-func (m XAIModel) SupportsVision() bool    { return supportsVision(m.Flavour, m.Tags) }
-func (m XAIModel) SupportsEmbedding() bool { return supportsEmbedding(m.Flavour, m.Tags) }
-
-// XAIModel contains metadata about an xAI (OpenAI-compatible) model.
-//
-// The IDs map directly to the `model` parameter used across OpenAI-compatible endpoints.
-type XAIModel struct {
-	// ID is the stable alias used in the API, e.g. "grok-4".
-	ID ModelID
-
-	// Name is a human-friendly display name.
-	Name string
-
-	// Flavour is a loose category used for UI/filters (e.g. "thinking", "instruct",
-	// "embedding", "image", "audio", "moderation", "tools").
-	Flavour string
-
-	// Tags is a list of cross-cutting capabilities (vision, tools, thinking, etc.).
-	Tags []Tag
-
-	// Description is a short, UI-friendly summary of the model.
-	Description string
-
-	// Snapshots optionally lists known pinned model versions (if any).
-	Snapshots []string
-
-	// Deprecated indicates the model is listed as deprecated.
-	Deprecated bool
-}
-
-// XAIModels holds a collection of XAIModel metadata.
-type XAIModels []XAIModel
-
 // xAI model identifiers (curated).
 //
 // Note: This is intentionally a small, best-effort list. The resolver can still accept
@@ -79,7 +30,7 @@ const (
 // AllXAIModels is a curated list of xAI models.
 //
 // Tags and flavours are best-effort UI hints; the authoritative capabilities are determined by the provider.
-var AllXAIModels = XAIModels{
+var AllXAIModels = Models{
 	{
 		ID:          Grok4,
 		Name:        "Grok 4",

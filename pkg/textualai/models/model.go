@@ -16,57 +16,8 @@ package models
 
 import "strings"
 
-// ModelID is a unique identifier for a model (as used in Ollama).
+// ModelID is a unique identifier for a model.
 type ModelID string
-
-// Model is a provider-agnostic view of an LLM/AI model definition.
-// Provider-specific structs (OpenAIModel, OllamaModel, ...) implement this interface.
-//
-// The method names are intentionally chosen to avoid clashing with common struct field
-// names (ID, Name, Tags, ...), allowing existing provider metadata structs to implement
-// the interface without structural changes.
-type Model interface {
-
-	// ProviderInfo returns the model provider.
-	ProviderInfo() ProviderInfo
-
-	// Identifier returns the provider model identifier (the string used in API calls).
-	Identifier() ModelID
-
-	// DisplayName is a human-friendly name for UI.
-	DisplayName() string
-
-	// Kind is a loose category used for UI/filters (e.g. "thinking", "instruct",
-	// "embedding", "image", "audio", "moderation", "tools").
-	Kind() string
-
-	// TagList is a list of cross-cutting capabilities (vision, tools, thinking, etc.).
-	TagList() []Tag
-
-	// Summary is a short UI-friendly description.
-	Summary() string
-
-	// KnownSnapshots returns known pinned snapshot IDs for this model, if any.
-	KnownSnapshots() []string
-
-	// IsDeprecated indicates the model is listed as deprecated.
-	IsDeprecated() bool
-
-	// KnownSizes returns model size variants when applicable (e.g. Ollama sizes).
-	KnownSizes() []string
-
-	// LicenseText returns the model license information when applicable.
-	LicenseText() string
-
-	// Derived capabilities (convenience helpers).
-
-	SupportsTools() bool
-	SupportsThinking() bool
-	SupportsVision() bool
-	SupportsEmbedding() bool
-}
-
-type Models []Model
 
 func supportsTools(tags []Tag) bool {
 	return hasTag(tags, TagTools)
@@ -115,3 +66,48 @@ func stringSliceContains(slice []string, s string) bool {
 	}
 	return false
 }
+
+type Models []Model
+
+type Model struct {
+
+	// ProviderName is injected by the Providers init func.
+	ProviderName ProviderName
+
+	// id is the stable alias used in the API, e.g. "grok-4".
+	ID ModelID
+
+	// name is a human-friendly display name.
+	Name string
+
+	// flavour is a loose category used for UI/filters (e.g. "thinking", "instruct",
+	// "embedding", "image", "audio", "moderation", "tools").
+	Flavour string
+
+	// tags is a list of cross-cutting capabilities (vision, tools, thinking, etc.).
+	Tags []Tag
+
+	// description is a short, UI-friendly summary of the model.
+	Description string
+
+	// sizes optionally list known sizes variants (ollama)
+	Sizes []string
+
+	// snapshots optionally list known pinned model versions (if any).
+	Snapshots []string
+
+	// license the licence of the model if applicable.
+	License string
+
+	// deprecated indicates the model is listed as deprecated.
+	Deprecated bool
+}
+
+func (m Model) ProviderInfo() ProviderInfo {
+	pi, _ := m.ProviderName.ProviderInfo()
+	return pi
+}
+func (m Model) SupportsTools() bool     { return supportsTools(m.Tags) }
+func (m Model) SupportsThinking() bool  { return supportsThinking(m.Flavour, m.Tags) }
+func (m Model) SupportsVision() bool    { return supportsVision(m.Flavour, m.Tags) }
+func (m Model) SupportsEmbedding() bool { return supportsEmbedding(m.Flavour, m.Tags) }

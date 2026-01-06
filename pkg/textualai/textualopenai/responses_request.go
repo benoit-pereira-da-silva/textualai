@@ -204,7 +204,7 @@ func NewResponsesRequest(ctx context.Context, model models.Model) *ResponsesRequ
 	return &ResponsesRequest{
 		ctx:             ctx,
 		splitFunc:       textual.ScanJSON,
-		Model:           model.Identifier(),
+		Model:           model.ID,
 		Input:           nil,
 		Stream:          true,
 		MaxOutputTokens: 0,

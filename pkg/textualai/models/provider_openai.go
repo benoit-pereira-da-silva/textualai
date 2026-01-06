@@ -14,59 +14,6 @@
 
 package models
 
-// Compile-time check: OpenAIModel implements Model.
-var _ Model = OpenAIModel{}
-
-func (m OpenAIModel) ProviderInfo() ProviderInfo { p, _ := Providers[ProviderOpenAI]; return p }
-func (m OpenAIModel) Identifier() ModelID        { return m.ID }
-func (m OpenAIModel) DisplayName() string        { return m.Name }
-func (m OpenAIModel) Kind() string               { return m.Flavour }
-func (m OpenAIModel) TagList() []Tag             { return m.Tags }
-func (m OpenAIModel) Summary() string            { return m.Description }
-func (m OpenAIModel) KnownSnapshots() []string   { return m.Snapshots }
-func (m OpenAIModel) IsDeprecated() bool         { return m.Deprecated }
-func (m OpenAIModel) KnownSizes() []string       { return nil }
-func (m OpenAIModel) LicenseText() string        { return "" }
-
-func (m OpenAIModel) SupportsTools() bool     { return supportsTools(m.Tags) }
-func (m OpenAIModel) SupportsThinking() bool  { return supportsThinking(m.Flavour, m.Tags) }
-func (m OpenAIModel) SupportsVision() bool    { return supportsVision(m.Flavour, m.Tags) }
-func (m OpenAIModel) SupportsEmbedding() bool { return supportsEmbedding(m.Flavour, m.Tags) }
-
-// OpenAIModel contains metadata about an OpenAI Platform model.
-//
-// The IDs map directly to the `model` parameter used across OpenAI API endpoints.
-//
-// Source of truth (keep this list in sync with the docs):
-//   - https://platform.openai.com/docs/models
-type OpenAIModel struct {
-	// ID is the stable alias used in the API, e.g. "gpt-5.2" or "o3".
-	ID ModelID
-
-	// Name is a human-friendly display name.
-	Name string
-
-	// Flavour is a loose category used for UI/filters (e.g. "thinking", "instruct",
-	// "embedding", "image", "video", "audio", "moderation", "tools").
-	Flavour string
-
-	// Tags is a list of cross-cutting capabilities (vision, tools, thinking, etc.).
-	Tags []Tag
-
-	// Description is a short, UI-friendly summary of the model.
-	Description string
-
-	// Snapshots optionally lists known pinned model versions (e.g. "gpt-5.2-2025-12-11").
-	// Use a snapshot to lock in behavior; use the base ID for "latest".
-	Snapshots []string
-
-	// Deprecated indicates the model is listed as deprecated in OpenAI docs.
-	Deprecated bool
-}
-
-// OpenAIModels holds a collection of OpenAIModel metadata.
-type OpenAIModels []OpenAIModel
-
 // OpenAI Platform model identifiers.
 //
 // NOTE: These are API model IDs (the string passed in the `model` parameter), not marketing names.
@@ -167,7 +114,7 @@ const (
 //   - This list intentionally focuses on developer-facing, documented model IDs.
 //   - Some models are marked Deprecated when the docs label them as such.
 //   - Snapshots are provided for frequently pinned models; when in doubt, use the base ID.
-var AllOpenAIModels = OpenAIModels{
+var AllOpenAIModels = Models{
 	// Frontier reasoning (GPT-5 family).
 	{
 		ID:          GPT52Pro,

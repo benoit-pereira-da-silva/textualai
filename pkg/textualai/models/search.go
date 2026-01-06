@@ -25,9 +25,7 @@ func Search(query string) Models {
 	if q == "" {
 		return nil
 	}
-
 	var results Models
-
 	for _, m := range AllOpenAIModels {
 		if modelMatches(m, q) {
 			results = append(results, m)
@@ -43,77 +41,52 @@ func Search(query string) Models {
 			results = append(results, m)
 		}
 	}
-
 	return results
 }
 
 // SearchProvider is like Search but restricted to a single provider.
-func SearchProvider(provider ProviderName, query string) Models {
+func SearchProvider(p ProviderName, query string) Models {
+	var results Models = make(Models, 0)
 	q := strings.ToLower(strings.TrimSpace(query))
 	if q == "" {
-		return nil
+		return results
 	}
-	var results Models
-	switch provider {
-	case ProviderOpenAI:
-		for _, m := range AllOpenAIModels {
-			if modelMatches(m, q) {
-				results = append(results, m)
+	for providerName, provider := range Providers {
+		if p == providerName {
+			for _, model := range provider.Models {
+				if modelMatches(model, q) {
+					results = append(results, model)
+				}
 			}
 		}
-	case ProviderOllama:
-		for _, m := range AllOllamaModels {
-			if modelMatches(m, q) {
-				results = append(results, m)
-			}
-		}
-	case ProviderXAI:
-		for _, m := range AllXAIModels {
-			if modelMatches(m, q) {
-				results = append(results, m)
-			}
-		}
-	default:
-		// Unknown provider: nothing to search in curated catalogs.
-		return nil
 	}
-
 	return results
 }
 
 func modelMatches(m Model, q string) bool {
-	if m == nil {
-		return false
-	}
-	pi := m.ProviderInfo()
-	if strings.Contains(strings.ToLower(string(pi.Name)), q) {
+	if strings.Contains(strings.ToLower(strings.TrimSpace(m.Name)), q) {
 		return true
 	}
-	if strings.Contains(strings.ToLower(strings.TrimSpace(m.DisplayName())), q) {
+	if strings.Contains(strings.ToLower(string(m.ID)), q) {
 		return true
 	}
-	if strings.Contains(strings.ToLower(string(m.Identifier())), q) {
-		return true
-	}
-	if strings.Contains(strings.ToLower(strings.TrimSpace(m.Kind())), q) {
+	if strings.Contains(strings.ToLower(strings.TrimSpace(m.Flavour)), q) {
 		return true
 	}
 
-	for _, tag := range m.TagList() {
+	for _, tag := range m.Tags {
 		if strings.Contains(strings.ToLower(string(tag)), q) {
 			return true
 		}
 	}
-
 	// Snapshots are often searched directly.
-	for _, snap := range m.KnownSnapshots() {
+	for _, snap := range m.Snapshots {
 		if strings.Contains(strings.ToLower(snap), q) {
 			return true
 		}
 	}
-
 	// Sizes are relevant for some providers.
-	for _, sz := range m.KnownSizes() {
+	for _, sz := range m.Sizes {
 		if strings.Contains(strings.ToLower(sz), q) {
 			return true
 		}
@@ -129,13 +102,13 @@ func (m Models) Search(query string) Models {
 	}
 	var results Models
 	for _, model := range m {
-		if strings.Contains(strings.ToLower(string(model.Identifier())), q) ||
-			strings.Contains(strings.ToLower(string(model.DisplayName())), q) {
+		if strings.Contains(strings.ToLower(string(model.ID)), q) ||
+			strings.Contains(strings.ToLower(string(model.Name)), q) {
 			results = append(results, model)
 			continue
 		}
 
-		for _, tag := range model.TagList() {
+		for _, tag := range model.Tags {
 			if strings.Contains(strings.ToLower(string(tag)), q) {
 				results = append(results, model)
 				break

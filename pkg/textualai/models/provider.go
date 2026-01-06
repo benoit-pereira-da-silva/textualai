@@ -2,19 +2,13 @@ package models
 
 import "strings"
 
-// ProviderName identifies a model provider in ModelString descriptors.
-//
-// Examples:
-//   - "openai"  -> OpenAI Platform
-//   - "ollama"  -> Ollama (OpenAI-compatible /v1 endpoints)
-//   - "xai"     -> xAI (OpenAI-compatible /v1 endpoints)
-type ProviderName string
+type Provider struct {
+	Info   ProviderInfo `json:"info"`
+	Models Models       `json:"models"`
+}
 
-const (
-	ProviderOpenAI ProviderName = "openai"
-	ProviderOllama ProviderName = "ollama"
-	ProviderXAI    ProviderName = "xai"
-)
+// ProviderName identifies a model provider in ModelString descriptors.
+type ProviderName string
 
 // ProviderInfo contains provider-level capabilities and defaults.
 //
@@ -47,8 +41,11 @@ type ProviderInfo struct {
 
 // ProviderInfo returns provider metadata if the provider is registered.
 func (p ProviderName) ProviderInfo() (ProviderInfo, bool) {
-	pi, ok := Providers[p]
-	return pi, ok
+	provider, ok := Providers[p]
+	if !ok {
+		return ProviderInfo{}, false
+	}
+	return provider.Info, true
 }
 
 // NormalizeProviderName canonicalizes a provider name for lookups.

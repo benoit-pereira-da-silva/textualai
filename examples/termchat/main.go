@@ -59,8 +59,8 @@ func main() {
 
 	// Thinking compatibility gate: if thinking is explicitly requested, refuse early
 	// for non-reasoning models (so users don't get confusing API errors).
-	if *thinking && (model == nil || !model.SupportsThinking()) {
-		log.Fatalf("termchat: -thinking requested but model %q does not advertise reasoning/thinking support", model.DisplayName())
+	if *thinking && !model.SupportsThinking() {
+		log.Fatalf("termchat: -thinking requested but model %q does not advertise reasoning/thinking support", model.Name)
 	}
 
 	client, err := textualopenai.ClientFrom(*baseURLFlag, model, context.Background(), "XAI_API_KEY", "OPENAI_API_KEY")

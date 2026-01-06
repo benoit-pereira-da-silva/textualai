@@ -130,7 +130,7 @@ func (s ModelString) ProviderInfo() (ProviderInfo, error) {
 func (s ModelString) Model() (Model, error) {
 	p, id, err := s.Split()
 	if err != nil {
-		return nil, err
+		return Model{}, err
 	}
 	return Resolve(p, id)
 }
