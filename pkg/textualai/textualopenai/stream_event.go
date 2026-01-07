@@ -33,6 +33,10 @@ https://platform.openai.com/docs/api-reference/responses-streaming
 */
 type EventType string
 
+func (e EventType) String() string {
+	return string(e)
+}
+
 type EventTypes []EventType
 
 const (
