@@ -7,6 +7,8 @@ type Provider struct {
 	Models Models       `json:"models"`
 }
 
+type Providers map[ProviderName]Provider
+
 // ProviderName identifies a model provider in ModelString descriptors.
 type ProviderName string
 
@@ -41,7 +43,7 @@ type ProviderInfo struct {
 
 // ProviderInfo returns provider metadata if the provider is registered.
 func (p ProviderName) ProviderInfo() (ProviderInfo, bool) {
-	provider, ok := Providers[p]
+	provider, ok := providers[p]
 	if !ok {
 		return ProviderInfo{}, false
 	}
@@ -55,7 +57,7 @@ func NormalizeProviderName(s string) (ProviderName, bool) {
 	if s == "" {
 		return "", false
 	}
-	for name := range Providers {
+	for name := range providers {
 		if s == string(name) {
 			return name, true
 		}

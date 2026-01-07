@@ -41,7 +41,7 @@ func Resolve(providerName ProviderName, id ModelID) (Model, error) {
 		return Model{}, errors.New("model identifier is empty")
 	}
 	mid := ModelID(strings.TrimSpace(string(id)))
-	provider, ok := Providers[providerName]
+	provider, ok := providers[providerName]
 	if !ok {
 		return Model{}, fmt.Errorf("provider named \"%s\" not found", providerName)
 	}

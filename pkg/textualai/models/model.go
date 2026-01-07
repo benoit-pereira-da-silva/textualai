@@ -71,7 +71,7 @@ type Models []Model
 
 type Model struct {
 
-	// ProviderName is injected by the Providers init func.
+	// ProviderName is injected by the providers init func.
 	ProviderName ProviderName `json:"providerName"`
 
 	// ID is the stable alias used in the API, e.g. "grok-4".

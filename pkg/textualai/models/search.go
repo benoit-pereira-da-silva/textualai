@@ -51,7 +51,7 @@ func SearchProvider(p ProviderName, query string) Models {
 	if q == "" {
 		return results
 	}
-	for providerName, provider := range Providers {
+	for providerName, provider := range providers {
 		if p == providerName {
 			for _, model := range provider.Models {
 				if modelMatches(model, q) {

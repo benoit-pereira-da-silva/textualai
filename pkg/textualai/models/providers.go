@@ -8,22 +8,26 @@ const (
 
 func init() {
 	// Inject the provider names in the Models.
-	for name, prov := range Providers {
+	for name, prov := range providers {
 		models := make([]Model, len(prov.Models))
 		for idx, model := range prov.Models {
 			model.ProviderName = name
 			models[idx] = model
 		}
-		Providers[name] = Provider{
+		providers[name] = Provider{
 			Info:   prov.Info,
 			Models: models,
 		}
 	}
 }
 
-// Providers is a small provider registry used for model parsing and capability gating.
+func AllProviders() Providers {
+	return providers
+}
+
+// providers is a small provider registry used for model parsing and capability gating.
 // Add new providers here as the framework expands.
-var Providers = map[ProviderName]Provider{
+var providers = Providers{
 	ProviderOpenAI: Provider{
 		Info: ProviderInfo{
 			Name:                        ProviderOpenAI,
