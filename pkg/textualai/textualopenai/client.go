@@ -90,8 +90,8 @@ func (c Client) Stream(r Requestable) (*http.Response, error) {
 	if r == nil {
 		return nil, errors.New("textualopenai: nil ResponsesRequest")
 	}
-	if r.Validate() != nil {
-		return nil, r.Validate()
+	if err := r.Validate(); err != nil {
+		return nil, err
 	}
 	endpoint, err := r.URL(c.baseURL)
 	if err != nil {
