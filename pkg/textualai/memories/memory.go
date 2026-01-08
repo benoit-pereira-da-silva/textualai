@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// Memory is a simple generic, time-indexed in-memory storage structure.
+// Memory is a generic, time-indexed in-memory storage structure.
 // Big brother is watching you!
 //
 // Items are stored with their insertion time as the key. This allows
@@ -96,7 +96,14 @@ func (m *Memory[I]) Add(item ...I) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.items == nil {
-		m.items = make(TimedMap[I], m.limit)
+		// IMPORTANT:
+		// Do not pass a negative size hint to make(map, hint) (it panics).
+		// limit <= 0 means "no limit", so we allocate with a zero hint.
+		if m.limit > 0 {
+			m.items = make(TimedMap[I], m.limit)
+		} else {
+			m.items = make(TimedMap[I])
+		}
 	}
 	for _, i := range item {
 		// Use a collision-proof insertion key while preserving the semantics
@@ -161,6 +168,26 @@ func (m *Memory[I]) Rewrite(fn func(TimedMap[I]) TimedMap[I]) {
 	}
 
 	m.items = newItems
+	m.unsafePurgeIfNeeded()
+}
+
+// Purge forces a purge pass according to the current limit and timeout configuration.
+//
+// This is useful when callers want expiration enforced on read (e.g. before injecting
+// conversation history) and auto-purge is disabled.
+//
+// Purge is safe for concurrent use.
+func (m *Memory[I]) Purge() {
+	if m == nil {
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if len(m.items) == 0 {
+		return
+	}
 	m.unsafePurgeIfNeeded()
 }
 
@@ -249,6 +276,21 @@ func (m *Memory[I]) AutoPurge(every time.Duration) {
 			}
 		}
 	}()
+}
+
+// SetAutoPurgeFrequency configures the auto-purge lifecycle.
+//
+// If every <= 0, any running auto-purge goroutine is stopped.
+// If every > 0, auto-purge is started (or restarted) to run every `every`.
+func (m *Memory[I]) SetAutoPurgeFrequency(every time.Duration) {
+	if m == nil {
+		return
+	}
+	if every <= 0 {
+		m.HaltAutoPurge()
+		return
+	}
+	m.AutoPurge(every)
 }
 
 // HaltAutoPurge stops a running auto-purge goroutine (if any).
