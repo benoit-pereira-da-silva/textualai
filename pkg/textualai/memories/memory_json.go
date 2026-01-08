@@ -3,83 +3,87 @@ package memories
 import (
 	"encoding/json"
 	"errors"
-	"io/fs"
+	"io"
 	"sort"
 	"time"
 )
 
-// FS is the filesystem abstraction used by this package for persistence.
+// WriteJSON writes the provided Memory as JSON into w.
 //
-// It is intentionally stricter than io/fs.FS: it requires write support via WriteFile.
-// Reading is provided by embedding io/fs.FS (Open), which is enough for fs.ReadFile.
+// This is an io-based API (streams) rather than a file-based API.
 //
-// Atomic writes are best-effort: if the filesystem also implements Rename
-type FS interface {
-	Open(name string) (fs.File, error)
-	WriteFile(name string, data []byte, perm fs.FileMode) error
-	Rename(oldName, newName string) error
+// Requirements:
+//   - w MUST be non-nil.
+//   - m MUST be non-nil.
+//
+// The JSON produced uses Memory's custom MarshalJSON implementation, which
+// includes only durable state (UUID, limit, timeout, items).
+func (m *Memory[I]) WriteJSON(w io.Writer) error {
+	return m.WriteJSONIndent(w, "", "  ")
 }
 
-// SaveJSONFile persists the provided Memory to a JSON file.
+// WriteJSONIndent writes the provided Memory as JSON into w using json.Encoder
+// with indentation.
 //
-// Filesystem requirements:
-//   - fsys MUST be non-nil.
-//   - fsys MUST support writing via WriteFile.
-//   - Atomic rename is attempted if the filesystem also supports a Rename method.
-//     If rename is not available, the data is written directly to `path`.
+// Requirements:
+//   - w MUST be non-nil.
+//   - m MUST be non-nil.
 //
-// NOTE: The Go standard library's io/fs.FS is read-only by design, so this package
-// defines its own memories.FS interface to require write support.
-func SaveJSONFile[I any](fsys FS, m *Memory[I], path string) error {
+// Use indent="" and prefix="" for compact output (no extra whitespace).
+func (m *Memory[I]) WriteJSONIndent(w io.Writer, prefix, indent string) error {
 	if m == nil {
 		return errors.New("memories: nil memory")
 	}
-	if path == "" {
-		return errors.New("memories: empty path")
-	}
-	if fsys == nil {
-		return errors.New("memories: nil filesystem")
+	if w == nil {
+		return errors.New("memories: nil writer")
 	}
 
-	b, err := json.MarshalIndent(m, "", "  ")
-	if err != nil {
-		return err
+	enc := json.NewEncoder(w)
+	if indent != "" || prefix != "" {
+		enc.SetIndent(prefix, indent)
 	}
-	tmp := path + ".tmp"
-	if wErr := fsys.WriteFile(tmp, b, 0o600); wErr != nil {
-		return wErr
-	}
-	return fsys.Rename(tmp, path)
-
+	// Encoder.Encode writes a trailing newline; this is usually desirable for
+	// stream and file sinks alike.
+	return enc.Encode(m)
 }
 
-// LoadJSONFile loads durable Memory state from a JSON file and returns a new Memory instance.
+// LoadJSON reads a Memory instance from r.
 //
-// Filesystem requirements:
-//   - fsys MUST be non-nil and readable (implements Open).
-//   - FS includes write methods, but only read is needed for Load.
+// This is an io-based API (streams) rather than a file-based API.
+//
+// Requirements:
+//   - r MUST be non-nil.
 //
 // AutoPurge is not started on load to avoid surprising background behavior and accidental
-// deletion immediately after restoring from disk. Callers can explicitly start it if desired.
-func LoadJSONFile[I any](fsys FS, path string) (*Memory[I], error) {
-	if path == "" {
-		return nil, errors.New("memories: empty path")
-	}
-	if fsys == nil {
-		return nil, errors.New("memories: nil filesystem")
-	}
-
-	b, err := fs.ReadFile(fsys, path)
-	if err != nil {
-		return nil, err
+// deletion immediately after restoring from disk or a remote stream. Callers can explicitly
+// start it if desired.
+func LoadJSON[I any](r io.Reader) (*Memory[I], error) {
+	if r == nil {
+		return nil, errors.New("memories: nil reader")
 	}
 
 	m := &Memory[I]{}
-	if uErr := json.Unmarshal(b, m); uErr != nil {
-		return nil, uErr
+	if err := DecodeJSONInto[I](r, m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// DecodeJSONInto decodes a Memory JSON payload from r into the provided Memory.
+//
+// Requirements:
+//   - r MUST be non-nil.
+//   - m MUST be non-nil.
+func DecodeJSONInto[I any](r io.Reader, m *Memory[I]) error {
+	if r == nil {
+		return errors.New("memories: nil reader")
+	}
+	if m == nil {
+		return errors.New("memories: nil memory")
 	}
 
-	return m, nil
+	dec := json.NewDecoder(r)
+	return dec.Decode(m)
 }
 
 // MarshalJSON implements json.Marshaler.

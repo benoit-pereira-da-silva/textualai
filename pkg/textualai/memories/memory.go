@@ -30,7 +30,7 @@ type Memory[I any] struct {
 
 	// items store memory entries indexed by their insertion timestamp.
 	// The timestamp is used for ordering and expiration checks.
-	items map[time.Time]I
+	items TimedMap[I]
 
 	// mu protects all access to items and configuration fields.
 	mu sync.RWMutex
@@ -92,7 +92,7 @@ func (m *Memory[I]) Add(item I) {
 	defer m.mu.Unlock()
 
 	if m.items == nil {
-		m.items = make(map[time.Time]I)
+		m.items = make(TimedMap[I], m.limit)
 	}
 
 	m.items[time.Now()] = item
@@ -107,15 +107,22 @@ func (m *Memory[I]) Add(item I) {
 //
 // Note that the values stored in the map are copied by assignment.
 // If I is a reference type, the underlying data it points to is not deep-copied.
-func (m *Memory[I]) GetItems() map[time.Time]I {
+func (m *Memory[I]) GetItems() TimedMap[I] {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	cpy := make(map[time.Time]I, len(m.items))
+	cpy := make(TimedMap[I], len(m.items))
 	for k, v := range m.items {
 		cpy[k] = v
 	}
 	return cpy
+}
+
+// GetSortedItems returns a slice of items sorted in ascending order using the map time stamps.
+func (m *Memory[I]) GetSortedItems() []I {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.items.Sorted()
 }
 
 // Rewrite atomically rewrites the internal items map using a user-provided function.
@@ -130,7 +137,7 @@ func (m *Memory[I]) GetItems() map[time.Time]I {
 //
 // WARNING: The input map passed to the rewrite function is the internal map.
 // It must be treated as read-only. Mutating it directly may cause data races.
-func (m *Memory[I]) Rewrite(fn func(map[time.Time]I) map[time.Time]I) {
+func (m *Memory[I]) Rewrite(fn func(TimedMap[I]) TimedMap[I]) {
 	if fn == nil {
 		return
 	}
@@ -141,7 +148,7 @@ func (m *Memory[I]) Rewrite(fn func(map[time.Time]I) map[time.Time]I) {
 	newItems := fn(m.items)
 	if newItems == nil {
 		// Never allow a nil map to be stored.
-		m.items = make(map[time.Time]I)
+		m.items = make(TimedMap[I])
 		m.unsafePurgeIfNeeded()
 		return
 	}
