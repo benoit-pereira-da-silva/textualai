@@ -229,6 +229,7 @@ func (m *Memory[I]) AutoPurge(every time.Duration) {
 				if len(m.items) > 0 {
 					m.unsafePurgeIfNeeded()
 				}
+				m.mu.Unlock()
 			case <-stop:
 				return
 			}
