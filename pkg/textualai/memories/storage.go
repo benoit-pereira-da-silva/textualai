@@ -10,7 +10,7 @@ import (
 // It provides concurrency-safe access to create, retrieve, and store
 // multiple independent Memory objects.
 type Storage[T any] struct {
-	// Items maps a UUID to its corresponding Memory instance.
+	// Items map a UUID to its corresponding Memory instance.
 	Items map[UUID]*Memory[T]
 
 	// mu protects concurrent access to the Items map.
@@ -34,7 +34,6 @@ func NewStorage[T any]() *Storage[T] {
 func (s *Storage[T]) GetMemory(id UUID) (*Memory[T], bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-
 	v, ok := s.Items[id]
 	return v, ok
 }

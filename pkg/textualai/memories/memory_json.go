@@ -100,9 +100,9 @@ func (m *Memory[I]) MarshalJSON() ([]byte, error) {
 
 	// Build a stable, deterministic slice ordering for reproducible JSON output.
 	entries := make([]memoryJSONEntry[I], 0, len(m.items))
-	for t, v := range m.items {
+	for k, v := range m.items {
 		entries = append(entries, memoryJSONEntry[I]{
-			Time:  t.UTC().Format(time.RFC3339Nano),
+			Time:  k.Time().UTC().Format(time.RFC3339Nano),
 			Value: v,
 		})
 	}
@@ -165,16 +165,26 @@ func (m *Memory[I]) UnmarshalJSON(data []byte) error {
 		timeoutMS = d.Milliseconds()
 	}
 
-	items := make(map[time.Time]I, len(raw.Items))
+	items := make(TimedMap[I], len(raw.Items))
+	// seqByTimeNS tracks how many entries we have already loaded for a given
+	// UnixNano timestamp, so we can assign a stable tie-breaker to preserve
+	// distinct entries even when times collide.
+	seqByTimeNS := make(map[int64]uint64)
+
 	for _, e := range raw.Items {
 		if e.Time == "" {
 			return errors.New("memories: invalid item time: empty")
 		}
-		t, err := time.Parse(time.RFC3339Nano, e.Time)
+		tt, err := time.Parse(time.RFC3339Nano, e.Time)
 		if err != nil {
 			return err
 		}
-		items[t] = e.Value
+
+		ns := tt.UnixNano()
+		seq := seqByTimeNS[ns]
+		seqByTimeNS[ns] = seq + 1
+
+		items[TimedKey{t: ns, n: seq}] = e.Value
 	}
 
 	m.mu.Lock()
@@ -190,7 +200,7 @@ func (m *Memory[I]) UnmarshalJSON(data []byte) error {
 	m.items = items
 	// Keep invariants: never store a nil map.
 	if m.items == nil {
-		m.items = make(map[time.Time]I)
+		m.items = make(TimedMap[I])
 	}
 	return nil
 }

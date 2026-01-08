@@ -45,6 +45,11 @@ type Memory[I any] struct {
 	// autoPurgeTicker is the ticker used by the auto-purge goroutine.
 	// It is nil when auto-purge is not running.
 	autoPurgeTicker *time.Ticker
+
+	// keyFactory generates collision-proof, totally ordered insertion keys.
+	// This preserves the same semantics as using insertion time, while avoiding
+	// overwrites when time resolution causes duplicate timestamps.
+	keyFactory KeyFactory
 }
 
 // memoryJSON is the private on-disk / wire representation for Memory.
@@ -87,15 +92,17 @@ func NewMemory[I any](uuid UUID, limit int, timeout time.Duration, autoPurgeFreq
 //
 // If the internal map is not initialized, it will be created lazily.
 // After insertion, memory limits and timeouts are enforced.
-func (m *Memory[I]) Add(item I) {
+func (m *Memory[I]) Add(item ...I) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
 	if m.items == nil {
 		m.items = make(TimedMap[I], m.limit)
 	}
-
-	m.items[time.Now()] = item
+	for _, i := range item {
+		// Use a collision-proof insertion key while preserving the semantics
+		// of "insertion time as the key".
+		m.items[m.keyFactory.NowKey()] = i
+	}
 	m.unsafePurgeIfNeeded()
 }
 
@@ -274,7 +281,7 @@ func (m *Memory[I]) unsafePurgeIfNeeded() {
 	// Enforce memory limit by purging the oldest entries.
 	if m.limit > 0 {
 		for len(m.items) > m.limit {
-			var oldest time.Time
+			var oldest TimedKey
 			first := true
 
 			for k := range m.items {
@@ -291,10 +298,16 @@ func (m *Memory[I]) unsafePurgeIfNeeded() {
 			delete(m.items, oldest)
 		}
 	}
+
 	// Purge expired entries based on timeout.
 	if m.timeOut > 0 {
+		// Equivalent to `time.Since(k) > m.timeOut` for time.Time keys,
+		// implemented efficiently using the stored UnixNano timestamp.
+		now := time.Now().UnixNano()
+		cutoff := now - m.timeOut.Nanoseconds()
+
 		for k := range m.items {
-			if time.Since(k) > m.timeOut {
+			if k.t < cutoff {
 				delete(m.items, k)
 			}
 		}
