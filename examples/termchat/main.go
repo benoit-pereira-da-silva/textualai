@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/benoit-pereira-da-silva/textual/pkg/textual"
+	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/memories"
 	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/models"
 	"github.com/benoit-pereira-da-silva/textualai/pkg/textualai/textualopenai"
 )
@@ -48,7 +49,13 @@ func main() {
 		nonInteractivePrompt = flag.String("prompt", "", "If set, runs a single request and exits (otherwise starts a tiny REPL)")
 		thinking             = flag.Bool("thinking", false, "If set, thinking mode is requested (only supported by reasoning models)")
 		displayHeaderInfos   = flag.Bool("display-header-infos", false, "Display header infos")
+
+		historyUUIDFlag      = flag.String("history-uuid", "", "Optional UUID for the in-memory REPL history")
+		historyAutoPurgeFlag = flag.Duration("history-auto-purge", 0, "Optional periodic purge frequency for REPL history (<=0 disables; purge is always enforced on Add)")
+		historyLimitFlag     = flag.Int("history-limit", 0, "Maximum number of messages to keep in interactive REPL history (<=0 = unlimited)")
+		historyTimeoutFlag   = flag.Duration("history-timeout", 0, "Auto-expire REPL history messages older than this duration (0 = disabled, examples: 30s, 5m, 1h)")
 	)
+
 	flag.Parse()
 
 	// Resolve model
@@ -64,6 +71,9 @@ func main() {
 	}
 
 	client, err := textualopenai.ClientFrom(*baseURLFlag, model, context.Background(), "XAI_API_KEY", "OPENAI_API_KEY")
+	if err != nil {
+		log.Fatal(err)
+	}
 	opts := sessionOptions{
 		Model:              model,
 		MaxOutputTokens:    *maxOutputTokensFlag,
@@ -94,14 +104,28 @@ func main() {
 		return
 	}
 
-	runRepl(ctx, client, opts)
+	// Interactive mode: keep history only in memory (no filesystem persistence).
+	history := initReplHistory(*historyUUIDFlag, *historyLimitFlag, *historyTimeoutFlag, *historyAutoPurgeFlag)
+	defer history.HaltAutoPurge()
+
+	if opts.DisplayHeaderInfos {
+		_, _ = fmt.Fprintf(os.Stderr, "termchat: history=memory uuid=%s items=%d timeout=%s\n", history.UUID, history.Size(), history.Timeout())
+	}
+
+	runRepl(ctx, client, opts, history)
 }
 
-// runRepl is a Minimal REP that keeps conversation history in memory.
-func runRepl(ctx context.Context, client textualopenai.Client, opts sessionOptions) {
+// initReplHistory creates a new in-memory conversation history.
+func initReplHistory(uuidFlag string, limit int, timeout time.Duration, autoPurge time.Duration) *memories.Memory[textualopenai.InputItem] {
+	id := parseOrGenerateUUID(uuidFlag)
+	return memories.NewMemory[textualopenai.InputItem](id, limit, timeout, autoPurge)
+}
+
+// runRepl is a Minimal REPL that keeps conversation history in a textualai memories.Memory.
+func runRepl(ctx context.Context, client textualopenai.Client, opts sessionOptions, history *memories.Memory[textualopenai.InputItem]) {
 	_, _ = fmt.Fprintln(os.Stderr, "Enter a prompt and press Enter (Ctrl-D to quit, Ctrl-C to interrupt).")
 	scanner := bufio.NewScanner(os.Stdin)
-	history := make([]textualopenai.InputItem, 0, 16)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -109,6 +133,7 @@ func runRepl(ctx context.Context, client textualopenai.Client, opts sessionOptio
 			return
 		default:
 		}
+
 		_, _ = fmt.Fprint(os.Stderr, "> ")
 		if !scanner.Scan() {
 			// EOF or error.
@@ -123,17 +148,17 @@ func runRepl(ctx context.Context, client textualopenai.Client, opts sessionOptio
 		}
 
 		// Add user turn.
-		history = append(history, textualopenai.InputItem{Role: "user", Content: content})
+		history.Add(textualopenai.InputItem{Role: "user", Content: content})
 
 		// Stream assistant response (with tool loop) and append it to history.
-		assistantText, err := streamResponsesWithTools(ctx, client, opts, history)
+		assistantText, err := streamResponsesWithTools(ctx, client, opts, historySnapshotSorted(history))
 		if err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, "\nerror:", err)
 			continue
 		}
 
 		_, _ = fmt.Fprint(os.Stdout, "\n")
-		history = append(history, textualopenai.InputItem{Role: "assistant", Content: assistantText})
+		history.Add(textualopenai.InputItem{Role: "assistant", Content: assistantText})
 	}
 }
 
@@ -370,4 +395,26 @@ func get_time(location string) (string, error) {
 	iso := nowInLocation.Format(time.RFC3339)
 
 	return fmt.Sprintf("%s (%s) [%s] — %s", human, utcOffset, tz, iso), nil
+}
+
+// historySnapshotSorted returns the REPL history as a chronologically-ordered slice of input items.
+func historySnapshotSorted(history *memories.Memory[textualopenai.InputItem]) []textualopenai.InputItem {
+	if history == nil {
+		return []textualopenai.InputItem{}
+	}
+	return history.GetSortedItems()
+}
+
+func parseOrGenerateUUID(uuidFlag string) memories.UUID {
+	u := strings.TrimSpace(uuidFlag)
+	if u != "" {
+		return memories.UUID(u)
+	}
+
+	id := memories.V4UUID()
+	if strings.TrimSpace(id.String()) != "" {
+		return id
+	}
+	// crypto/rand failure fallback (extremely rare): still provide a stable identifier.
+	return memories.UUID(fmt.Sprintf("termchat-%d", time.Now().UnixNano()))
 }
