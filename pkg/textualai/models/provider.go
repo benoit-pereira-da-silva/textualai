@@ -39,6 +39,10 @@ type ProviderInfo struct {
 	// SupportsStrictFunctionTools indicates whether the provider supports the `strict`
 	// attribute for function tools (JSON Schema strict mode).
 	SupportsStrictFunctionTools bool `json:"supports_strict_function_tools"`
+
+	// SupportsInstructions defines if the provider natively supports instructions.
+	// If not the request engine may transform the instruction field to a System role input.
+	SupportsInstructions bool `json:"supports_instructions"`
 }
 
 // ProviderInfo returns provider metadata if the provider is registered.

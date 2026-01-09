@@ -36,6 +36,7 @@ var providers = Providers{
 			APIKeyRequired:              true,
 			SupportsConversation:        true,
 			SupportsStrictFunctionTools: true,
+			SupportsInstructions:        true,
 		},
 		Models: AllOpenAIModels,
 	},
@@ -47,6 +48,7 @@ var providers = Providers{
 			APIKeyRequired:              false,
 			SupportsConversation:        false,
 			SupportsStrictFunctionTools: false,
+			SupportsInstructions:        false, // Need to rely on system role input
 		},
 		Models: AllOllamaModels,
 	},
@@ -58,6 +60,7 @@ var providers = Providers{
 			APIKeyRequired:              true,
 			SupportsConversation:        false,
 			SupportsStrictFunctionTools: false,
+			SupportsInstructions:        false, // Need to rely on system role input
 		},
 		Models: AllXAIModels,
 	},
