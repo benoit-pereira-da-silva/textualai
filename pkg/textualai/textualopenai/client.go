@@ -41,9 +41,10 @@ type Client struct {
 	apiKeyRequired bool
 }
 
-func ClientFrom(baseURL string, model models.Model, ctx context.Context, apiKeyEnvVarNames ...string) (Client, error) {
+func ClientFrom(baseURL string, model models.Model, ctx context.Context) (Client, error) {
 	// NOTE: http.Client.Timeout covers the whole request lifetime (including reading resp.Body).
 	// For streaming requests, we rely on context cancellation instead, so Timeout is left to 0.
+	providerInfo := model.ProviderInfo()
 	client := Client{
 		httpClient: &http.Client{
 			Timeout: 0,
@@ -51,17 +52,17 @@ func ClientFrom(baseURL string, model models.Model, ctx context.Context, apiKeyE
 		ctx: ctx,
 	}
 	client.model = model
-	client.apiKey = strings.TrimSpace(firstNonEmpty(apiKeyEnvVarNames...))
+	client.apiKey = strings.TrimSpace(firstNonEmpty(providerInfo.ApiKeyEnvVar))
 	baseURL = strings.TrimSpace(baseURL)
 	if baseURL == "" {
-		baseURL = model.ProviderInfo().DefaultBaseURL
+		baseURL = providerInfo.DefaultBaseURL
 	}
 	validUrl, err := url.Parse(baseURL)
 	if err != nil {
 		return client, err
 	}
 	client.baseURL = validUrl.String()
-	client.apiKeyRequired = model.ProviderInfo().APIKeyRequired
+	client.apiKeyRequired = providerInfo.APIKeyRequired
 	return client, nil
 }
 

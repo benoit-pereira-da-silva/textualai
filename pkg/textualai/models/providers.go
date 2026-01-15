@@ -31,6 +31,7 @@ var providers = Providers{
 	ProviderOpenAI: Provider{
 		Info: ProviderInfo{
 			Name:                        ProviderOpenAI,
+			ApiKeyEnvVar:                "OPENAI_API_KEY",
 			DisplayName:                 "OpenAI",
 			DefaultBaseURL:              "https://api.openai.com/v1",
 			APIKeyRequired:              true,
@@ -43,6 +44,7 @@ var providers = Providers{
 	ProviderOllama: Provider{
 		Info: ProviderInfo{
 			Name:                        ProviderOllama,
+			ApiKeyEnvVar:                "",
 			DisplayName:                 "Ollama",
 			DefaultBaseURL:              "http://localhost:11434/v1",
 			APIKeyRequired:              false,
@@ -55,6 +57,7 @@ var providers = Providers{
 	ProviderXAI: Provider{
 		Info: ProviderInfo{
 			Name:                        ProviderXAI,
+			ApiKeyEnvVar:                "XAI_API_KEY",
 			DisplayName:                 "xAI",
 			DefaultBaseURL:              "https://api.x.ai/v1",
 			APIKeyRequired:              true,

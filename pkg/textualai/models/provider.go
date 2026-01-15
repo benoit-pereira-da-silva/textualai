@@ -18,8 +18,12 @@ type ProviderName string
 // the Responses "conversation" feature for persisted conversations, while many
 // OpenAI-compatible providers do not.
 type ProviderInfo struct {
+
 	// Name is the canonical provider identifier used in ModelString descriptors.
 	Name ProviderName `json:"name"`
+
+	// ApiKeyEnvVar is the environment variable name used to store the provider's API key.
+	ApiKeyEnvVar string `json:"apiKeyEnvVar"`
 
 	// DisplayName is a UI-friendly provider name.
 	DisplayName string `json:"display_name"`

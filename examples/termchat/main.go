@@ -70,7 +70,7 @@ func main() {
 		log.Fatalf("termchat: -thinking requested but model %q does not advertise reasoning/thinking support", model.Name)
 	}
 
-	client, err := textualopenai.ClientFrom(*baseURLFlag, model, context.Background(), "XAI_API_KEY", "OPENAI_API_KEY")
+	client, err := textualopenai.ClientFrom(*baseURLFlag, model, context.Background())
 	if err != nil {
 		log.Fatal(err)
 	}
